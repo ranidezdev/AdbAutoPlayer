@@ -145,9 +145,16 @@ class HomesteadHelperMixin(AFKJourneyBase):
     def homestead_orders_helper(self) -> None:
         """Collect Mine resources and fulfill Homestead Requests orders."""
         self.start_up()
-        self._ensure_in_homestead()
-        self._collect_homestead_resources()
-        self._handle_homestead_requests()
+        try:
+            self._ensure_in_homestead()
+            self._collect_homestead_resources()
+            self._handle_homestead_requests()
+        finally:
+            # Leave Homestead so any task that runs next (even after a
+            # failure here) starts from World - otherwise its Battle-Modes-
+            # style navigation could mistap a Homestead building instead of
+            # the intended World button.
+            self.navigate_to_world()
 
     def _ensure_in_homestead(self) -> None:
         """Enter homestead if not already there.
@@ -243,7 +250,11 @@ class HomesteadHelperMixin(AFKJourneyBase):
         # Scroll down until a Mine building card is visible.
         mine = None
         for _ in range(self.HOMESTEAD_MINE_SCROLL_ATTEMPTS):
-            mine = self.game_find_template_match(template=self.HOMESTEAD_MINE_TEMPLATE)
+            mine = self.game_find_template_match(
+                template=self.HOMESTEAD_MINE_TEMPLATE,
+                threshold=ConfidenceValue("75%"),
+                grayscale=True,
+            )
             if mine is not None:
                 break
             self.swipe_up(x=540, sy=1500, ey=700)
