@@ -6,6 +6,7 @@ from enum import Enum
 from time import sleep
 from typing import ClassVar
 
+import numpy as np
 from adb_auto_player.decorators import register_command, register_custom_routine_choice
 from adb_auto_player.exceptions import GameTimeoutError
 from adb_auto_player.games.afk_journey.base import AFKJourneyBase
@@ -93,16 +94,20 @@ class HomesteadHelperMixin(AFKJourneyBase):
         Point(640, 1815),
         Point(822, 1815),
     )
-    # Crop region (x1, y1, x2, y2) of the Wish Point reward number shown under
-    # "Basic Rewards" (left reward card) for the currently selected request.
+    # Crop region (x1, y1, x2, y2) of the "Basic Rewards" panel for the
+    # currently selected request. It deliberately spans BOTH reward cards:
+    # the Wish Points number (left card) and the Ancient Coins number (right
+    # card). We OCR the whole band, keep only numeric blocks and pick the
+    # left-most one as the Wish Points value. A wide crop avoids clipping
+    # wider (4-5 digit) numbers, and using the left-most block guarantees we
+    # never accidentally read the Ancient Coins number on the right.
     # The number's vertical position varies (~y=768 for most requests, ~y=819
     # for the request pre-selected when the view opens), so the crop is tall
-    # enough to cover both. The x range fits 3-5 digit centre-aligned values
-    # while staying clear of the Ancient Coin number on the right card.
-    HOMESTEAD_WISH_POINT_CROP: ClassVar[tuple[int, int, int, int]] = (
-        190,
+    # enough to cover both.
+    HOMESTEAD_REWARDS_CROP: ClassVar[tuple[int, int, int, int]] = (
+        150,
         745,
-        330,
+        560,
         850,
     )
     # After selecting a portrait the Basic Rewards panel animates in, so the
@@ -124,6 +129,9 @@ class HomesteadHelperMixin(AFKJourneyBase):
     HOMESTEAD_INNER_LOOP_LIMIT = 25
     # Abort ingredient crafting if nothing progresses within this many seconds.
     HOMESTEAD_INGREDIENT_CRAFT_TIMEOUT = 30
+    # Attempts (each followed by 0.5s) to detect the insufficient-resources popup
+    # arrow after tapping a craft/action button before assuming crafting started.
+    HOMESTEAD_ARROW_DETECT_ATTEMPTS = 6
 
     @register_command(
         name="HomesteadOrdersHelper",
@@ -338,9 +346,13 @@ class HomesteadHelperMixin(AFKJourneyBase):
             False if nothing more to do in this Requests visit.
         """
         exhausted: set[int] = set()
+        # Cache Wish Point values across iterations. Only the request that was
+        # just delivered is replaced by a new order, so the other portraits keep
+        # their previously-read values and do not need to be OCR'd again.
+        cache: dict[int, int] = {}
 
         for _ in range(self.HOMESTEAD_INNER_LOOP_LIMIT):
-            selected = self._select_best_request(exclude=exhausted)
+            selected = self._select_best_request(exclude=exhausted, cache=cache)
             if selected is None:
                 logging.info("No selectable request - no more orders.")
                 return False
@@ -353,16 +365,28 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 # This request cannot be progressed right now; skip it and try
                 # the next-best one in the following iteration.
                 exhausted.add(selected)
-            # DELIVERED: loop again and re-compare the remaining requests.
+            else:
+                # DELIVERED: this slot now shows a new order, so its cached value
+                # is stale. Invalidate it to force a fresh read next iteration;
+                # the remaining slots keep their cached values.
+                cache.pop(selected, None)
 
         logging.info("Request fulfillment inner loop limit reached.")
         return False
 
-    def _read_request_wish_points(self, exclude: set[int]) -> dict[int, int]:
+    def _read_request_wish_points(
+        self, exclude: set[int], cache: dict[int, int]
+    ) -> dict[int, int]:
         """Tap each request portrait and OCR its Wish Point reward value.
+
+        Portraits whose value is already present in ``cache`` are not tapped or
+        re-read; their previously-read value is reused. Newly read values are
+        written back into ``cache``.
 
         Args:
             exclude: Portrait indices to skip (already exhausted this visit).
+            cache: Known Wish Point values from previous comparisons. Updated
+                in place with any values read during this call.
 
         Returns:
             Mapping of portrait index (0-based) to Wish Point value. Portraits
@@ -373,10 +397,9 @@ class HomesteadHelperMixin(AFKJourneyBase):
             backend = RapidOCRBackend()
             self._homestead_ocr_backend = backend
 
-        x1, y1, x2, y2 = self.HOMESTEAD_WISH_POINT_CROP
-        values: dict[int, int] = {}
+        x1, y1, x2, y2 = self.HOMESTEAD_REWARDS_CROP
         for index, point in enumerate(self.HOMESTEAD_REQUEST_PORTRAIT_POINTS):
-            if index in exclude:
+            if index in exclude or index in cache:
                 continue
             self.tap(point)
             # The Basic Rewards panel animates in after selecting a portrait, so
@@ -385,30 +408,91 @@ class HomesteadHelperMixin(AFKJourneyBase):
             for _ in range(self.HOMESTEAD_WISH_POINT_READ_ATTEMPTS):
                 sleep(self.HOMESTEAD_WISH_POINT_READ_DELAY)
                 crop = self.get_screenshot()[y1:y2, x1:x2]
-                digits = re.sub(r"\D", "", backend.extract_text(crop))
-                if digits:
-                    value = int(digits)
+                value = self._read_wish_points_from_crop(backend, crop)
+                if value is not None:
                     break
             if value is not None:
-                values[index] = value
+                cache[index] = value
                 logging.debug("Request %d Wish Points: %d", index + 1, value)
             else:
                 logging.debug("Request %d Wish Points unreadable.", index + 1)
-        return values
+        return {index: value for index, value in cache.items() if index not in exclude}
 
-    def _select_best_request(self, exclude: set[int]) -> int | None:
+    @staticmethod
+    def _read_wish_points_from_crop(
+        backend: RapidOCRBackend,
+        crop: np.ndarray,
+    ) -> int | None:
+        """Extract the Wish Point value from a Basic Rewards crop.
+
+        The crop spans both reward cards. Wish Points is the left card and
+        Ancient Coins the right card, so of all numeric text blocks the
+        left-most one is the Wish Point value.
+
+        Args:
+            backend: OCR backend used to detect text blocks.
+            crop: Cropped image (numpy array) of the Basic Rewards band.
+
+        Returns:
+            The Wish Point value, or None if no numeric block was found.
+        """
+        numeric: list[tuple[int, int]] = []
+        for result in backend.detect_text_blocks(crop):
+            value = HomesteadHelperMixin._parse_reward_number(result.text)
+            if value is not None:
+                numeric.append((result.box.center.x, value))
+        if not numeric:
+            return None
+        # Left-most numeric block == Wish Points (Ancient Coins is to the right).
+        numeric.sort(key=lambda item: item[0])
+        return numeric[0][1]
+
+    @staticmethod
+    def _parse_reward_number(text: str) -> int | None:
+        """Parse a reward number, honoring ``k``/``m`` magnitude suffixes.
+
+        OCR reads values such as ``12k`` or ``1.2M``. Stripping non-digits would
+        turn ``12k`` into ``12``, making it compare as smaller than ``6000``.
+        This expands the suffix so ``12k`` becomes ``12000``.
+
+        Args:
+            text: The OCR text block to parse.
+
+        Returns:
+            The parsed integer value, or None if no number was found.
+        """
+        match = re.search(r"(\d[\d.,]*)\s*([kKmM])?", text)
+        if match is None:
+            return None
+        raw_number = match.group(1)
+        suffix = match.group(2)
+        if suffix:
+            # With a suffix a separator is a decimal point (e.g. 1.2k, 1,2k).
+            number = float(raw_number.replace(",", "."))
+            multiplier = 1_000 if suffix.lower() == "k" else 1_000_000
+            return int(number * multiplier)
+        # Without a suffix separators are thousands groupings (e.g. 12,000).
+        digits = re.sub(r"\D", "", raw_number)
+        return int(digits) if digits else None
+
+    def _select_best_request(
+        self, exclude: set[int], cache: dict[int, int]
+    ) -> int | None:
         """Select the request with the highest Wish Point reward.
 
-        Reads all four request portraits, taps the one with the highest Wish
-        Point value (ignoring any in ``exclude``) and returns its index.
+        Reads any request portraits whose value is not already cached, taps the
+        one with the highest Wish Point value (ignoring any in ``exclude``) and
+        returns its index.
 
         Args:
             exclude: Portrait indices to skip (already exhausted this visit).
+            cache: Known Wish Point values from previous comparisons. Updated
+                in place with any values read during this call.
 
         Returns:
             The selected portrait index, or None if no request could be read.
         """
-        candidates = self._read_request_wish_points(exclude=exclude)
+        candidates = self._read_request_wish_points(exclude=exclude, cache=cache)
         if not candidates:
             logging.info("No selectable requests with a readable reward.")
             return None
@@ -530,13 +614,23 @@ class HomesteadHelperMixin(AFKJourneyBase):
         # Tap the action button (Cook / Alchemize / Forge).
         logging.info("Tapping action button.")
         self.tap(self.HOMESTEAD_ACTION_BUTTON_POINT)
+        sleep(2)
 
-        # The action button is replaced by a different button while crafting.
-        # Sleep briefly to let the UI swap, then wait for the action button
-        # to reappear — that signals crafting is complete. Once a batch is
-        # crafted a previously available ingredient may run out, so the button
-        # can come back greyed-out instead of coloured.
-        sleep(5)
+        # Pressing a coloured action button can still raise an "insufficient
+        # resources" popup when a base ingredient is too low for the chosen
+        # multiplier (e.g. enough for x1 but not x10). Detect that popup and
+        # craft the missing ingredient first; the caller re-enters afterwards.
+        if self._craft_missing_ingredient_via_arrow():
+            logging.info(
+                "Insufficient resources on craft - crafted the missing ingredient."
+            )
+            return
+
+        # No popup: crafting is underway. The action button is replaced by a
+        # different button while crafting; wait for it to reappear — that signals
+        # crafting is complete. Once a batch is crafted a previously available
+        # ingredient may run out, so the button can come back greyed-out.
+        sleep(3)
         logging.info("Waiting for crafting to complete...")
         result = self.wait_for_any_template(
             templates=action_templates + gray_templates,
@@ -580,20 +674,42 @@ class HomesteadHelperMixin(AFKJourneyBase):
         self.tap(self.HOMESTEAD_GRAY_ACTION_BUTTON_POINT)
         sleep(2)
 
-        # The popup mirrors the missing-resource one: tap its arrow to navigate.
-        arrow = self.game_find_template_match(
-            template=self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE
-        )
-        if arrow is not None:
-            logging.info("Tapping popup arrow to navigate to ingredient crafting.")
-            self.tap(arrow)
-        else:
+        if not self._craft_missing_ingredient_via_arrow():
             logging.warning(
                 "Missing-ingredient popup arrow not found - aborting ingredient craft."
             )
             self.press_back_button()
             sleep(2)
-            return
+
+    def _craft_missing_ingredient_via_arrow(self) -> bool:
+        """Follow the missing-resource popup arrow and craft one ingredient batch.
+
+        The same "insufficient resources" popup (with a navigate arrow) appears
+        both when a grey action button is tapped and when a coloured action
+        button is pressed without enough of a base ingredient for the chosen
+        multiplier. This detects that popup and, if present, navigates to the
+        ingredient crafting screen, crafts a small batch and returns to the
+        homestead world view.
+
+        Returns:
+            True if the popup arrow was found and the ingredient craft sub-flow
+            ran (or was aborted after navigating); False if no missing-resource
+            popup was present, i.e. nothing needed crafting.
+        """
+        # Wait briefly for the popup arrow to animate in before giving up.
+        arrow = None
+        for _ in range(self.HOMESTEAD_ARROW_DETECT_ATTEMPTS):
+            arrow = self.game_find_template_match(
+                template=self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE
+            )
+            if arrow is not None:
+                break
+            sleep(0.5)
+        if arrow is None:
+            return False
+
+        logging.info("Tapping popup arrow to navigate to ingredient crafting.")
+        self.tap(arrow)
 
         # Wait for the ingredient crafting screen (its green action button).
         ingredient_buttons = list(self.HOMESTEAD_INGREDIENT_ACTION_BUTTON_TEMPLATES)
@@ -610,7 +726,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
             )
             self.press_back_button()
             sleep(2)
-            return
+            return True
 
         sleep(1.5)  # let the screen settle before grabbing the slider
 
@@ -643,7 +759,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
             )
             self.press_back_button()
             sleep(2)
-            return
+            return True
 
         logging.info("Dismissing 'Tap to close' popup.")
         self.tap(self.HOMESTEAD_TAP_TO_CLOSE_POINT)
@@ -655,3 +771,4 @@ class HomesteadHelperMixin(AFKJourneyBase):
         logging.info("Returning from ingredient crafting.")
         self.press_back_button()
         sleep(2)
+        return True
