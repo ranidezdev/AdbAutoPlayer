@@ -1,10 +1,13 @@
 # Changelog
 
-## [12.9.24] - 2026-07-23
+## [12.9.27] - 2026-08-06
 
-### Bug Fixes
+### Features
 
-- **AFK Journey**:
-  - Improved `_find_date_tabs` logic and hero scanner ROI bounds to self-correct date tabs and log OCR hero readings accurately.
-- **UI**:
-  - Fixed active profile state synchronization during profile deletion in `+layout.svelte`.
+- **Debug & Screenshots**:
+  - Added automatic screenshot capture on unknown popups, navigation failures, and template timeouts.
+  - Added debug screenshot saving functionality in screenshot mixin for offline troubleshooting.
+
+### Refactoring
+
+- Changed negative `Point` coordinate clamping log level from warning to debug.
