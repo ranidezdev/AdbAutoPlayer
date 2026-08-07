@@ -6,15 +6,21 @@ from enum import Enum
 from time import sleep
 from typing import ClassVar
 
+import cv2
 import numpy as np
 from adb_auto_player.decorators import register_command, register_custom_routine_choice
-from adb_auto_player.exceptions import GameTimeoutError
+from adb_auto_player.exceptions import (
+    AutoPlayerUnrecoverableError,
+    AutoPlayerWarningError,
+    GameTimeoutError,
+)
 from adb_auto_player.games.afk_journey.base import AFKJourneyBase
 from adb_auto_player.games.afk_journey.gui_category import AFKJCategory
 from adb_auto_player.models import ConfidenceValue
 from adb_auto_player.models.decorators import GUIMetadata
 from adb_auto_player.models.geometry import Point
 from adb_auto_player.models.image_manipulation import CropRegions
+from adb_auto_player.models.template_matching import TemplateMatchResult
 from adb_auto_player.ocr import RapidOCRBackend
 from adb_auto_player.util import SummaryGenerator
 
@@ -73,6 +79,19 @@ class HomesteadHelperMixin(AFKJourneyBase):
     )
     HOMESTEAD_INGREDIENT_TAP_TO_CLOSE_TEMPLATE = "homestead/ingredient_tap_to_close.png"
 
+    # Templates - "Process Cards available to upgrade" popup + upgrade screen.
+    # The popup can appear on the way to the crafting screen; its green check
+    # accepts it and leads to the Process Upgrade screen where the upgradeable
+    # card (flagged with a small green arrow) is pre-selected, so pressing the
+    # green Upgrade button upgrades it.
+    HOMESTEAD_PROCESS_UPGRADE_POPUP_TEMPLATE = "homestead/process_upgrade_confirm.png"
+    HOMESTEAD_PROCESS_UPGRADE_BUTTON_TEMPLATE = "homestead/process_upgrade_button.png"
+
+    # Template - the "Stamina Bundle" shop popup that appears when Homestead
+    # stamina is depleted and a harvest/craft action is attempted. Its presence
+    # means no stamina is left, so the mode should conclude.
+    HOMESTEAD_NO_STAMINA_TEMPLATE = "homestead/stamina_bundle_popup.png"
+
     # Fixed tap point for the multiplier button (cycles x1 -> x5 -> x10)
     HOMESTEAD_MULTIPLIER_BUTTON_POINT = Point(760, 1660)
     # Fixed tap point for the action button (Make / Alchemize / Forge)
@@ -123,6 +142,8 @@ class HomesteadHelperMixin(AFKJourneyBase):
     HOMESTEAD_SLIDER_END_X = 375
 
     # Tuning
+    # Total attempts for the whole cycle: one initial run plus one retry.
+    HOMESTEAD_CYCLE_ATTEMPTS = 2
     HOMESTEAD_MINE_SCROLL_ATTEMPTS = 5
     HOMESTEAD_HARVEST_TIMEOUT = 30
     HOMESTEAD_OUTER_LOOP_LIMIT = 15
@@ -132,6 +153,12 @@ class HomesteadHelperMixin(AFKJourneyBase):
     # Attempts (each followed by 0.5s) to detect the insufficient-resources popup
     # arrow after tapping a craft/action button before assuming crafting started.
     HOMESTEAD_ARROW_DETECT_ATTEMPTS = 6
+    # A ready action button is coloured; a disabled (ingredient-missing) button
+    # is rendered as a pure-grey circle. Mean HSV saturation below this value
+    # means the button is greyed out. The action-button templates match the
+    # coloured and grey states at nearly the same confidence, so colour is the
+    # only reliable way to tell them apart.
+    HOMESTEAD_DISABLED_BUTTON_SATURATION_MAX = 25
 
     @register_command(
         name="HomesteadOrdersHelper",
@@ -146,15 +173,74 @@ class HomesteadHelperMixin(AFKJourneyBase):
         """Collect Mine resources and fulfill Homestead Requests orders."""
         self.start_up()
         try:
-            self._ensure_in_homestead()
-            self._collect_homestead_resources()
-            self._handle_homestead_requests()
+            self._run_homestead_cycle_with_retry()
         finally:
             # Leave Homestead so any task that runs next (even after a
             # failure here) starts from World - otherwise its Battle-Modes-
             # style navigation could mistap a Homestead building instead of
             # the intended World button.
             self.navigate_to_world()
+
+    def _run_homestead_cycle_with_retry(self) -> None:
+        """Run the full homestead cycle, retrying once on any recoverable error.
+
+        Any unexpected exception re-runs the whole cycle exactly one more time.
+        If the retry also fails the error is re-raised so the mode quits.
+        Unrecoverable errors are never retried.
+        """
+        for attempt in range(1, self.HOMESTEAD_CYCLE_ATTEMPTS + 1):
+            try:
+                self._run_homestead_cycle()
+                return
+            except AutoPlayerUnrecoverableError:
+                raise
+            except AutoPlayerWarningError:
+                # e.g. no stamina left - conclude the mode without retrying.
+                raise
+            except Exception:
+                if attempt >= self.HOMESTEAD_CYCLE_ATTEMPTS:
+                    logging.exception(
+                        "Homestead cycle failed again on retry - quitting mode."
+                    )
+                    raise
+                logging.exception(
+                    "Homestead cycle hit an unexpected error - "
+                    "retrying the whole cycle once."
+                )
+
+    def _conclude_if_no_stamina(self) -> None:
+        """End the mode cleanly if the out-of-stamina popup is showing.
+
+        Homestead harvesting and crafting consume stamina. When it runs out the
+        game shows a "Stamina Bundle" shop popup instead of performing the
+        action. Dismiss it and raise so the mode concludes without retrying.
+
+        Raises:
+            AutoPlayerWarningError: When the Stamina Bundle popup is detected.
+        """
+        if (
+            self.game_find_template_match(
+                template=self.HOMESTEAD_NO_STAMINA_TEMPLATE,
+                threshold=ConfidenceValue("80%"),
+            )
+            is None
+        ):
+            return
+        logging.info("Homestead stamina depleted - closing popup and ending mode.")
+        self.tap(self.HOMESTEAD_TAP_TO_CLOSE_POINT)
+        sleep(1)
+        raise AutoPlayerWarningError(
+            "No Homestead stamina remaining - Homestead Orders Helper finished."
+        )
+
+    def _run_homestead_cycle(self) -> None:
+        """Run one full homestead cycle.
+
+        Enters homestead, collects Mine resources and fulfills Requests orders.
+        """
+        self._ensure_in_homestead()
+        self._collect_homestead_resources()
+        self._handle_homestead_requests()
 
     def _ensure_in_homestead(self) -> None:
         """Enter homestead if not already there.
@@ -294,6 +380,8 @@ class HomesteadHelperMixin(AFKJourneyBase):
         )
         self.tap(harvest_all)
         sleep(4)  # wait for harvest animation and camera to settle
+
+        self._conclude_if_no_stamina()
 
         SummaryGenerator.increment("Homestead Orders Helper", "Resources Harvested")
         logging.info("Resources harvested.")
@@ -589,26 +677,48 @@ class HomesteadHelperMixin(AFKJourneyBase):
         popup into the ingredient crafting screen, craft a small batch, and
         return — the caller will re-enter the original craft afterwards.
 
-        Raises:
-            GameTimeoutError: if the crafting screen never loads or crafting
-                does not complete within the timeout — the caller should stop
-                the mode rather than loop indefinitely.
+        If the crafting screen never loads the request is skipped rather than
+        aborting the whole mode.
         """
         action_templates = list(self.HOMESTEAD_ACTION_BUTTON_TEMPLATES)
         gray_templates = list(self.HOMESTEAD_GRAY_ACTION_BUTTON_TEMPLATES)
 
         logging.info("Waiting for crafting screen to load...")
-        # The action button may be coloured (ready) or grey (ingredient missing).
-        result = self.wait_for_any_template(
-            templates=action_templates + gray_templates,
-            timeout=30,
-        )
+        # A "Process Cards available to upgrade" popup can appear on the way to
+        # the crafting screen. Detect the crafting screen via the always-present
+        # multiplier button (a reliable anchor) with the action buttons as
+        # fallbacks; the button templates alone are too weak for a 90% match.
+        # Grayscale + a lowered threshold makes detection robust to the button's
+        # colour state.
+        try:
+            result = self.wait_for_any_template(
+                templates=[
+                    self.HOMESTEAD_PROCESS_UPGRADE_POPUP_TEMPLATE,
+                    self.HOMESTEAD_MULTIPLIER_STATE_TEMPLATE,
+                    self.HOMESTEAD_MULTIPLIER_X10_TEMPLATE,
+                    *action_templates,
+                    *gray_templates,
+                ],
+                threshold=ConfidenceValue("70%"),
+                grayscale=True,
+                timeout=30,
+            )
+        except GameTimeoutError:
+            logging.warning("Crafting screen did not load - skipping this request.")
+            return
+
+        # The process-card upgrade popup interrupted craft navigation. Accept
+        # the upgrade and bail out - the caller re-enters the Requests view.
+        if result.template == self.HOMESTEAD_PROCESS_UPGRADE_POPUP_TEMPLATE:
+            self._handle_process_card_upgrade(result)
+            return
 
         sleep(2)  # let the UI fully settle
 
         # A grey action button means a required ingredient is missing but can be
-        # crafted. Handle that sub-flow and bail out of the normal craft path.
-        if result.template in gray_templates:
+        # crafted. The action-button templates cannot tell the grey and coloured
+        # states apart, so classify by colour (grey == zero saturation).
+        if self._action_button_is_disabled():
             logging.info(
                 "Greyed-out action button detected - a required ingredient is "
                 "missing. Navigating to ingredient crafting."
@@ -627,6 +737,10 @@ class HomesteadHelperMixin(AFKJourneyBase):
         self.tap(self.HOMESTEAD_ACTION_BUTTON_POINT)
         sleep(2)
 
+        # Out of stamina: the game shows the Stamina Bundle popup instead of
+        # crafting. Conclude the mode.
+        self._conclude_if_no_stamina()
+
         # Pressing a coloured action button can still raise an "insufficient
         # resources" popup when a base ingredient is too low for the chosen
         # multiplier (e.g. enough for x1 but not x10). Detect that popup and
@@ -643,22 +757,82 @@ class HomesteadHelperMixin(AFKJourneyBase):
         # ingredient may run out, so the button can come back greyed-out.
         sleep(3)
         logging.info("Waiting for crafting to complete...")
-        result = self.wait_for_any_template(
-            templates=action_templates + gray_templates,
-            timeout=30,
-        )
+        try:
+            self.wait_for_any_template(
+                templates=action_templates + gray_templates,
+                threshold=ConfidenceValue("70%"),
+                grayscale=True,
+                timeout=30,
+            )
+        except GameTimeoutError:
+            logging.warning("Crafting did not complete in time - continuing.")
+            return
 
         SummaryGenerator.increment("Homestead Orders Helper", "Items Crafted")
         logging.info("Crafting done.")
 
         # Crafting consumed the last of an ingredient: the button is now grey.
         # Craft the missing ingredient before returning to the caller.
-        if result.template in gray_templates:
+        if self._action_button_is_disabled():
             logging.info(
                 "Action button greyed-out after crafting - a required "
                 "ingredient ran out. Navigating to ingredient crafting."
             )
             self._handle_missing_ingredient_craft()
+
+    def _action_button_is_disabled(self) -> bool:
+        """Return True if the crafting action button is greyed out.
+
+        A ready action button is coloured while a disabled one (a required
+        ingredient is missing) is rendered as a pure-grey circle. The colour and
+        grey action-button templates match both states at nearly the same
+        confidence, so the button's saturation is the only reliable signal.
+        """
+        x = self.HOMESTEAD_ACTION_BUTTON_POINT.x
+        y = self.HOMESTEAD_ACTION_BUTTON_POINT.y
+        patch = self.get_screenshot()[y - 25 : y + 25, x - 25 : x + 25]
+        saturation = float(cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)[:, :, 1].mean())
+        return saturation < self.HOMESTEAD_DISABLED_BUTTON_SATURATION_MAX
+
+    # ------------------------------------------------------------------ #
+    #  Process-card upgrade                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _handle_process_card_upgrade(self, popup_check: TemplateMatchResult) -> None:
+        """Accept a "Process Cards available to upgrade" popup and upgrade a card.
+
+        Taps the green check-mark on the popup, waits for the Process Upgrade
+        screen and presses Upgrade for the pre-selected card. The game
+        auto-selects the upgradeable card (the one flagged with the small green
+        arrow badge in its top-right corner), so pressing Upgrade upgrades it.
+        Returning to the Requests view is handled by the caller.
+
+        Args:
+            popup_check: The matched green check-mark button on the popup.
+        """
+        logging.info("Process card upgrade available - accepting.")
+        self.tap(popup_check)
+        sleep(2)
+
+        try:
+            upgrade_button = self.wait_for_template(
+                template=self.HOMESTEAD_PROCESS_UPGRADE_BUTTON_TEMPLATE,
+                timeout=self.navigation_timeout,
+                timeout_message="Process Upgrade screen did not load.",
+            )
+        except GameTimeoutError:
+            logging.warning("Process Upgrade screen did not load - skipping upgrade.")
+            return
+
+        logging.info("Upgrading process card.")
+        self.tap(upgrade_button)
+        sleep(3)  # wait for the upgrade animation to finish
+
+        SummaryGenerator.increment("Homestead Orders Helper", "Process Cards Upgraded")
+
+        # Leave the Process Upgrade screen so the caller can return to Requests.
+        self.press_back_button()
+        sleep(2)
 
     # ------------------------------------------------------------------ #
     #  Missing-ingredient crafting                                         #
@@ -753,6 +927,10 @@ class HomesteadHelperMixin(AFKJourneyBase):
         # Press the green action button (Smelt / Shape / Refine).
         logging.info("Pressing ingredient craft button.")
         self.tap(self.HOMESTEAD_INGREDIENT_ACTION_BUTTON_POINT)
+
+        # Out of stamina: the game shows the Stamina Bundle popup instead of
+        # crafting. Conclude the mode.
+        self._conclude_if_no_stamina()
 
         # Wait for the "Tap to close" rewards popup, then dismiss it.
         try:

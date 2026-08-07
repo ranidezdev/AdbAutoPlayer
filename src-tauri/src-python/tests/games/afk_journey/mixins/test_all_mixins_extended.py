@@ -1,7 +1,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 
-from adb_auto_player.exceptions import GameTimeoutError
+import pytest
+from adb_auto_player.exceptions import AutoPlayerWarningError, GameTimeoutError
 from adb_auto_player.file_loader.settings_loader import SettingsLoader
 from adb_auto_player.games.afk_journey.mixins.arcane_labyrinth import (
     ArcaneLabyrinthMixin,
@@ -329,6 +330,63 @@ def test_run_homestead_helper():
             with patch.object(bot, "_collect_homestead_resources"):
                 with patch.object(bot, "_handle_homestead_requests"):
                     bot.homestead_orders_helper()
+
+
+def test_conclude_if_no_stamina_raises_and_closes_popup():
+    """When the Stamina Bundle popup shows, close it and end the mode."""
+    bot = MockAllAFKJ()
+    popup = TemplateMatchResult(
+        template="homestead/stamina_bundle_popup.png",
+        confidence=ConfidenceValue("90%"),
+        box=Box(Point(696, 557), 283, 49),
+    )
+    with (
+        patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
+        patch.object(bot, "game_find_template_match", return_value=popup),
+        patch.object(bot, "tap") as mock_tap,
+    ):
+        with pytest.raises(AutoPlayerWarningError):
+            bot._conclude_if_no_stamina()
+
+    mock_tap.assert_called_once_with(bot.HOMESTEAD_TAP_TO_CLOSE_POINT)
+
+
+def test_conclude_if_no_stamina_noop_when_absent():
+    """No popup present: do nothing and do not raise."""
+    bot = MockAllAFKJ()
+    with (
+        patch.object(bot, "game_find_template_match", return_value=None),
+        patch.object(bot, "tap") as mock_tap,
+    ):
+        bot._conclude_if_no_stamina()
+
+    mock_tap.assert_not_called()
+
+
+def test_handle_process_card_upgrade():
+    """Popup check is tapped, then the Upgrade button, then we back out."""
+    bot = MockAllAFKJ()
+    check = TemplateMatchResult(
+        template="homestead/process_upgrade_confirm.png",
+        confidence=ConfidenceValue("90%"),
+        box=Box(Point(880, 1270), 100, 100),
+    )
+    upgrade = TemplateMatchResult(
+        template="homestead/process_upgrade_button.png",
+        confidence=ConfidenceValue("90%"),
+        box=Box(Point(480, 1800), 200, 60),
+    )
+    with (
+        patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
+        patch.object(bot, "tap") as mock_tap,
+        patch.object(bot, "wait_for_template", return_value=upgrade),
+        patch.object(bot, "press_back_button") as mock_back,
+    ):
+        bot._handle_process_card_upgrade(check)
+
+    assert mock_tap.call_args_list[0].args[0] is check
+    assert mock_tap.call_args_list[1].args[0] is upgrade
+    mock_back.assert_called_once()
 
 
 def test_run_quests():
