@@ -418,6 +418,8 @@ pub fn get_app_settings_form(
 ) -> Result<AppSettingsResponse, CommandError> {
     let settings = AppSettings::load_from_file(get_app_settings_path(&app_handle));
 
+    warn_on_orphaned_profile_dirs(&app_handle, &settings);
+
     // Update state
     {
         let mut s = state.lock().unwrap();
@@ -429,6 +431,42 @@ pub fn get_app_settings_form(
         schema: APP_SETTINGS_SCHEMA.to_string(),
         file_name: "App.toml".to_string(),
     })
+}
+
+/// Warn if there are more numbered profile-settings folders on disk than
+/// configured profiles. This can't happen from normal use, but was the
+/// observable symptom of a bug where deleting a profile left its settings
+/// folder behind instead of cleaning it up, causing later profiles to read
+/// the wrong folder. Purely informational: which folder actually belongs to
+/// which profile can't be reconstructed, so this only surfaces the mismatch
+/// rather than trying to fix it automatically.
+fn warn_on_orphaned_profile_dirs(app_handle: &tauri::AppHandle, settings: &AppSettings) {
+    let Ok(config_dir) = app_handle.path().app_config_dir() else {
+        return;
+    };
+
+    let dir_count = fs::read_dir(&config_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry.path().is_dir()
+                        && entry.file_name().to_string_lossy().parse::<u32>().is_ok()
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let profile_count = settings.profiles.profiles.len();
+
+    if dir_count > profile_count {
+        let message = format!(
+            "Found {dir_count} profile settings folder(s) but only {profile_count} \
+             profile(s) configured in {}. A profile may be reading another \
+             profile's leftover settings folder from a previous deletion.",
+            config_dir.display()
+        );
+        let _ = app_handle.emit("log-message", LogMessage::new(LogLevel::WARNING, message));
+    }
 }
 
 #[tauri::command]

@@ -261,8 +261,8 @@ class AFKJourneyBase(
                     copied = self._copy_suggested_formation(
                         formations, skip_manual, only_manual
                     )
-                except AutoPlayerWarningError:
-                    logging.info("No more formations available, ending this pass.")
+                except AutoPlayerWarningError as e:
+                    logging.info(f"Ending this pass: {e}")
                     break
 
                 if not copied:
@@ -376,12 +376,17 @@ class AFKJourneyBase(
 
     def _navigate_to_formation_selection(self) -> None:
         """Navigate to the formation selection screen."""
-        result = self.wait_for_any_template(
-            templates=["battle/records.png", "battle/battle.png"],
-            crop_regions=CropRegions(top=0.7),
-            threshold=ConfidenceValue("80%"),
-            timeout=self.template_timeout,
-        )
+        try:
+            result = self.wait_for_any_template(
+                templates=["battle/records.png", "battle/battle.png"],
+                crop_regions=CropRegions(top=0.7),
+                threshold=ConfidenceValue("80%"),
+                timeout=self.template_timeout,
+                diagnostic_recheck=True,
+            )
+        except GameTimeoutError as e:
+            self.capture_debug_screenshot("formation_selection_not_found")
+            raise AutoPlayerWarningError(e)
         self.sleep_action()
 
         # If we found Records, tap it to open formations
