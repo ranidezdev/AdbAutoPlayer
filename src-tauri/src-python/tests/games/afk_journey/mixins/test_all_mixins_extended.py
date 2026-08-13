@@ -844,3 +844,92 @@ def test_run_dream_realm_scan_scans_configured_number_of_days():
 
     assert scanned_dates == ["Mon", "Sun", "Sat"]
     assert len(result) == 3
+
+
+def _ocr_block(text: str, left: int, width: int = 40) -> OCRResult:
+    """Build an OCRResult text block at a given horizontal position."""
+    return OCRResult(
+        text=text,
+        box=Box(Point(left, 780), width, 40),
+        confidence=ConfidenceValue("99%"),
+    )
+
+
+def test_read_wish_points_single_block():
+    """A single unsplit numeric block is read directly."""
+    backend = MagicMock()
+    backend.detect_text_blocks.return_value = [
+        _ocr_block("5520", 10),
+        _ocr_block("320", 300),  # Ancient Coins on the right
+    ]
+    value = HomesteadHelperMixin._read_wish_points_from_crop(backend, MagicMock())
+    assert value == 5520
+
+
+def test_read_wish_points_split_number_grouped():
+    """OCR splitting "9300" into "93" + "00" is regrouped, not read as 93."""
+    backend = MagicMock()
+    backend.detect_text_blocks.return_value = [
+        _ocr_block("93", 10, width=40),  # right edge = 50
+        _ocr_block("00", 55, width=40),  # gap 5 -> same card
+        _ocr_block("6480", 300, width=80),  # far right -> Ancient Coins
+    ]
+    value = HomesteadHelperMixin._read_wish_points_from_crop(backend, MagicMock())
+    assert value == 9300
+
+
+def test_read_wish_points_ignores_right_card():
+    """The far-right group (Ancient Coins) never wins over the left card."""
+    backend = MagicMock()
+    backend.detect_text_blocks.return_value = [
+        _ocr_block("6480", 300, width=80),  # right card, larger value
+        _ocr_block("120", 10, width=60),  # left card, smaller value
+    ]
+    value = HomesteadHelperMixin._read_wish_points_from_crop(backend, MagicMock())
+    assert value == 120
+
+
+def test_read_wish_points_none_when_no_digits():
+    """No numeric blocks -> None."""
+    backend = MagicMock()
+    backend.detect_text_blocks.return_value = [_ocr_block("Wish", 10)]
+    value = HomesteadHelperMixin._read_wish_points_from_crop(backend, MagicMock())
+    assert value is None
+
+
+def test_parse_reward_group_suffix_single_block():
+    """A single block with a k suffix expands to thousands."""
+    assert HomesteadHelperMixin._parse_reward_group(["12k"]) == 12000
+
+
+def test_confirm_crafting_screen_requires_two_consecutive():
+    """Crafting screen must be seen twice in a row before returning True."""
+    bot = MockAllAFKJ()
+    anchors = [
+        bot.HOMESTEAD_DECK_SETUP_TEMPLATE,
+        bot.HOMESTEAD_CRAFTING_SCREEN_TEMPLATE,
+    ]
+    match = MagicMock()
+    with (
+        patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
+        patch.object(
+            bot, "find_any_template", side_effect=[None, match, None, match, match]
+        ),
+    ):
+        assert bot._confirm_crafting_screen(anchors) is True
+
+
+def test_confirm_crafting_screen_gives_up_when_never_stable():
+    """Returns False when the crafting anchor never appears twice in a row."""
+    bot = MockAllAFKJ()
+    match = MagicMock()
+    # Alternating present/absent never yields two consecutive hits, so the
+    # confirm loop exhausts all attempts and gives up.
+    alternating = [match, None] * bot.HOMESTEAD_CRAFTING_CONFIRM_ATTEMPTS
+    with (
+        patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
+        patch.object(bot, "find_any_template", side_effect=alternating),
+    ):
+        assert (
+            bot._confirm_crafting_screen([bot.HOMESTEAD_DECK_SETUP_TEMPLATE]) is False
+        )

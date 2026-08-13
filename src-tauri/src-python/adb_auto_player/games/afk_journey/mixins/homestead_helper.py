@@ -3,6 +3,7 @@
 import logging
 import re
 from enum import Enum
+from itertools import pairwise
 from time import sleep
 from typing import ClassVar
 
@@ -56,6 +57,11 @@ class HomesteadHelperMixin(AFKJourneyBase):
     HOMESTEAD_MULTIPLIER_X10_TEMPLATE = "homestead/multiplier_x10.png"
     HOMESTEAD_MULTIPLIER_STATE_TEMPLATE = "homestead/multiplier_state.png"
     HOMESTEAD_CRAFTING_SCREEN_TEMPLATE = "homestead/crafting_screen_check.png"
+    # "Deck Setup" text label, only present on the crafting screen. Together
+    # with the dish/card row it is a craft-type-agnostic anchor that (unlike the
+    # colour-agnostic multiplier/action buttons) never false-matches on the
+    # transition screen while the player walks to the crafting building.
+    HOMESTEAD_DECK_SETUP_TEMPLATE = "homestead/deck_in_crafting_page.png"
     HOMESTEAD_ACTION_BUTTON_TEMPLATES: ClassVar[tuple[str, ...]] = (
         "homestead/cook_button.png",
         "homestead/alchem_button.png",
@@ -133,6 +139,12 @@ class HomesteadHelperMixin(AFKJourneyBase):
     # number is briefly blank. Retry the OCR read a few times until it appears.
     HOMESTEAD_WISH_POINT_READ_ATTEMPTS = 5
     HOMESTEAD_WISH_POINT_READ_DELAY = 0.6
+    # Maximum horizontal gap (px, in crop space) between two numeric OCR blocks
+    # for them to be treated as parts of the same reward number. OCR sometimes
+    # splits a single value (e.g. "9300" -> "93" + "00"); such fragments sit
+    # right next to each other, whereas the Ancient Coins number on the far
+    # right is separated by a much larger gap and forms its own group.
+    HOMESTEAD_CARD_GAP_MAX = 80
 
     # Ingredient-crafting slider geometry. The handle starts at the far left
     # (value 0); dragging right increases the craft amount. The track spans
@@ -153,6 +165,15 @@ class HomesteadHelperMixin(AFKJourneyBase):
     # Attempts (each followed by 0.5s) to detect the insufficient-resources popup
     # arrow after tapping a craft/action button before assuming crafting started.
     HOMESTEAD_ARROW_DETECT_ATTEMPTS = 6
+    # Attempts (each followed by 0.5s) to confirm the crafting screen is present
+    # and stable after navigation before interacting with the multiplier button.
+    # The player walks to the crafting building first, so the screen only appears
+    # after a delay; require it on two consecutive checks to avoid tapping the
+    # multiplier on the transition screen.
+    HOMESTEAD_CRAFTING_CONFIRM_ATTEMPTS = 12
+    # Consecutive positive checks required before the crafting screen is
+    # considered stable enough to interact with.
+    HOMESTEAD_CRAFTING_CONFIRM_STREAK = 2
     # A ready action button is coloured; a disabled (ingredient-missing) button
     # is rendered as a pure-grey circle. Mean HSV saturation below this value
     # means the button is greyed out. The action-button templates match the
@@ -526,7 +547,10 @@ class HomesteadHelperMixin(AFKJourneyBase):
 
         The crop spans both reward cards. Wish Points is the left card and
         Ancient Coins the right card, so of all numeric text blocks the
-        left-most one is the Wish Point value.
+        left-most one is the Wish Point value. OCR occasionally splits a single
+        number into adjacent blocks (e.g. "9300" -> "93" + "00"), so numeric
+        blocks are first grouped by horizontal proximity and each group's
+        fragments are concatenated before the left-most group is returned.
 
         Args:
             backend: OCR backend used to detect text blocks.
@@ -535,16 +559,48 @@ class HomesteadHelperMixin(AFKJourneyBase):
         Returns:
             The Wish Point value, or None if no numeric block was found.
         """
-        numeric: list[tuple[int, int]] = []
+        blocks: list[tuple[int, int, str]] = []
         for result in backend.detect_text_blocks(crop):
-            value = HomesteadHelperMixin._parse_reward_number(result.text)
-            if value is not None:
-                numeric.append((result.box.center.x, value))
-        if not numeric:
+            if re.search(r"\d", result.text):
+                blocks.append((result.box.left, result.box.right, result.text))
+        if not blocks:
             return None
-        # Left-most numeric block == Wish Points (Ancient Coins is to the right).
-        numeric.sort(key=lambda item: item[0])
-        return numeric[0][1]
+
+        blocks.sort(key=lambda b: b[0])
+        # Group fragments of the same number (small gap) into reward cards. The
+        # left-most group is Wish Points; the far-right group is Ancient Coins.
+        groups: list[list[tuple[int, int, str]]] = [[blocks[0]]]
+        for prev, block in pairwise(blocks):
+            if block[0] - prev[1] <= HomesteadHelperMixin.HOMESTEAD_CARD_GAP_MAX:
+                groups[-1].append(block)
+            else:
+                groups.append([block])
+
+        return HomesteadHelperMixin._parse_reward_group(
+            [block[2] for block in groups[0]]
+        )
+
+    @staticmethod
+    def _parse_reward_group(texts: list[str]) -> int | None:
+        """Parse the numeric value of one reward card from its OCR fragments.
+
+        A single, unsplit block is parsed with ``_parse_reward_number`` so
+        ``k``/``m`` suffixes and thousands separators are honoured. When OCR
+        splits the number across several blocks they are plain integer
+        fragments (a value large enough to be split is never abbreviated), so
+        their digits are concatenated in left-to-right order.
+
+        Args:
+            texts: OCR text fragments of a single reward card, ordered left to
+                right.
+
+        Returns:
+            The parsed integer value, or None if no digits were found.
+        """
+        if len(texts) == 1:
+            return HomesteadHelperMixin._parse_reward_number(texts[0])
+        digits = "".join(re.sub(r"\D", "", text) for text in texts)
+        return int(digits) if digits else None
 
     @staticmethod
     def _parse_reward_number(text: str) -> int | None:
@@ -684,22 +740,25 @@ class HomesteadHelperMixin(AFKJourneyBase):
         gray_templates = list(self.HOMESTEAD_GRAY_ACTION_BUTTON_TEMPLATES)
 
         logging.info("Waiting for crafting screen to load...")
-        # A "Process Cards available to upgrade" popup can appear on the way to
-        # the crafting screen. Detect the crafting screen via the always-present
-        # multiplier button (a reliable anchor) with the action buttons as
-        # fallbacks; the button templates alone are too weak for a 90% match.
-        # Grayscale + a lowered threshold makes detection robust to the button's
-        # colour state.
+        # After the navigate-to-crafting arrow is tapped the player physically
+        # walks to the crafting building, so the crafting screen only appears
+        # after a short delay. Gate on crafting-screen-specific anchors ("Deck
+        # Setup" text and the dish/card row) rather than the multiplier/action
+        # buttons: those buttons are colour-agnostic and were false-matching on
+        # the transition screen, causing the multiplier to be tapped before the
+        # player arrived. A "Process Cards available to upgrade" popup can also
+        # appear on the way to the crafting screen.
+        crafting_anchors = [
+            self.HOMESTEAD_DECK_SETUP_TEMPLATE,
+            self.HOMESTEAD_CRAFTING_SCREEN_TEMPLATE,
+        ]
         try:
             result = self.wait_for_any_template(
                 templates=[
                     self.HOMESTEAD_PROCESS_UPGRADE_POPUP_TEMPLATE,
-                    self.HOMESTEAD_MULTIPLIER_STATE_TEMPLATE,
-                    self.HOMESTEAD_MULTIPLIER_X10_TEMPLATE,
-                    *action_templates,
-                    *gray_templates,
+                    *crafting_anchors,
                 ],
-                threshold=ConfidenceValue("70%"),
+                threshold=ConfidenceValue("80%"),
                 grayscale=True,
                 timeout=30,
             )
@@ -711,6 +770,15 @@ class HomesteadHelperMixin(AFKJourneyBase):
         # the upgrade and bail out - the caller re-enters the Requests view.
         if result.template == self.HOMESTEAD_PROCESS_UPGRADE_POPUP_TEMPLATE:
             self._handle_process_card_upgrade(result)
+            return
+
+        # Confirm the player has actually arrived on the crafting screen and it
+        # is stable before interacting - never tap the multiplier while still
+        # transitioning.
+        if not self._confirm_crafting_screen(crafting_anchors):
+            logging.warning(
+                "Crafting screen not stable after navigation - skipping request."
+            )
             return
 
         sleep(2)  # let the UI fully settle
@@ -779,6 +847,40 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 "ingredient ran out. Navigating to ingredient crafting."
             )
             self._handle_missing_ingredient_craft()
+
+    def _confirm_crafting_screen(self, anchors: list[str]) -> bool:
+        """Confirm the crafting screen is present and stable before interacting.
+
+        The player walks to the crafting building after the navigate arrow is
+        tapped, so the crafting screen only appears once they arrive and its UI
+        briefly animates in. Require a crafting anchor to be present across two
+        consecutive checks before interacting so the multiplier is never tapped
+        on the transition screen.
+
+        Args:
+            anchors: Crafting-screen-specific templates to look for.
+
+        Returns:
+            True if an anchor was present on two consecutive checks.
+        """
+        consecutive = 0
+        for _ in range(self.HOMESTEAD_CRAFTING_CONFIRM_ATTEMPTS):
+            present = (
+                self.find_any_template(
+                    anchors,
+                    threshold=ConfidenceValue("80%"),
+                    grayscale=True,
+                )
+                is not None
+            )
+            if present:
+                consecutive += 1
+                if consecutive >= self.HOMESTEAD_CRAFTING_CONFIRM_STREAK:
+                    return True
+            else:
+                consecutive = 0
+            sleep(0.5)
+        return False
 
     def _action_button_is_disabled(self) -> bool:
         """Return True if the crafting action button is greyed out.
