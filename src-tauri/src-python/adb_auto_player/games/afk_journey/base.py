@@ -211,9 +211,11 @@ class AFKJourneyBase(
                 timeout=timeout,
                 crop_regions=CropRegions(top=0.5),
                 threshold=ConfidenceValue("80%"),
+                diagnostic_recheck=raise_on_timeout,
             )
         except GameTimeoutError as error:
             if raise_on_timeout:
+                self.capture_debug_screenshot("battle_screen_not_found")
                 raise error
             return None
 

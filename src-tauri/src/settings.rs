@@ -65,6 +65,14 @@ const APP_SETTINGS_SCHEMA: &str = r##"
             "minimum": 10,
             "maximum": 300,
             "formType": "slider"
+          },
+          "max_consecutive_restarts": {
+            "default": 5,
+            "title": "Watchdogs: Max Consecutive Restarts",
+            "description": "Give up instead of restarting again after this many restarts in a row fail to keep the task running for at least 5 minutes.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
           }
         },
         "title": "AdvancedSettings",
@@ -295,6 +303,8 @@ pub struct AdvancedSettings {
     pub template_timeout: f32,
     #[serde(default = "default_watchdog_restart_delay")]
     pub watchdog_restart_delay: u32,
+    #[serde(default = "default_max_consecutive_restarts")]
+    pub max_consecutive_restarts: u32,
 }
 
 impl Default for AdvancedSettings {
@@ -307,6 +317,7 @@ impl Default for AdvancedSettings {
             navigation_delay: default_navigation_delay(),
             template_timeout: default_template_timeout(),
             watchdog_restart_delay: default_watchdog_restart_delay(),
+            max_consecutive_restarts: default_max_consecutive_restarts(),
         }
     }
 }
@@ -325,6 +336,10 @@ fn default_template_timeout() -> f32 {
 
 fn default_watchdog_restart_delay() -> u32 {
     40
+}
+
+fn default_max_consecutive_restarts() -> u32 {
+    5
 }
 
 fn default_restart_mins() -> u32 {
@@ -388,6 +403,9 @@ impl AppSettings {
         }
         if self.advanced.restart_stuck_task_after_mins < 3 {
             self.advanced.restart_stuck_task_after_mins = default_restart_mins();
+        }
+        if self.advanced.max_consecutive_restarts < 1 {
+            self.advanced.max_consecutive_restarts = default_max_consecutive_restarts();
         }
     }
 

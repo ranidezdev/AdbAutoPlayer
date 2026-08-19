@@ -164,6 +164,20 @@ class AdbController:
         """
         self._ensure_display_ids_resolved(package_name_prefixes)
 
+    def reset_display_targeting(self) -> None:
+        """Drop cached display ids so the next screenshot/stream re-resolves them.
+
+        On multi-display emulators (e.g. MuMuPlayer's Android 15 image) the
+        game's virtual display is torn down and recreated with a new id every
+        time the app is force-stopped and relaunched. Without this, a
+        mid-task `restart_game()` leaves `screenshot()`/`DeviceStream`
+        targeting a display id that no longer exists, causing screenshots to
+        fail indefinitely on every retry after the restart.
+        """
+        self._screenshot_display_id = None
+        self._input_display_id = None
+        self._display_ids_resolved = False
+
     def _ensure_display_ids_resolved(self, package_name_prefixes: list[str]) -> None:
         """Resolve and cache the game's display ids, once, if not already done."""
         if self._display_ids_resolved:
