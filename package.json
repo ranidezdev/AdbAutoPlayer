@@ -15,10 +15,10 @@
   },
   "description": "",
   "devDependencies": {
-    "@skeletonlabs/skeleton": "^5.0.0",
-    "@skeletonlabs/skeleton-svelte": "^5.0.0",
+    "@skeletonlabs/skeleton": "^5.0.1",
+    "@skeletonlabs/skeleton-svelte": "^5.0.1",
     "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.70.2",
+    "@sveltejs/kit": "^2.70.3",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@tailwindcss/forms": "^0.5.11",
     "@tauri-apps/cli": "^2.11.4",
@@ -27,8 +27,8 @@
     "prettier": "^3.9.5",
     "prettier-plugin-svelte": "^4.1.1",
     "prettier-plugin-tailwindcss": "^0.8.1",
-    "svelte": "^5.56.8",
-    "svelte-check": "^4.7.5",
+    "svelte": "^5.56.10",
+    "svelte-check": "^4.7.6",
     "typescript": "^6.0.3",
     "vite": "^8.1.5",
     "vite-plugin-devtools-json": "^1.1.0"
@@ -47,5 +47,5 @@
     "tauri": "tauri"
   },
   "type": "module",
-  "version": "12.10.0"
+  "version": "12.11.0"
 }
