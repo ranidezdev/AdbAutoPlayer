@@ -17,6 +17,10 @@ from adb_auto_player.models.image_manipulation import CropRegions
 
 _GENERIC_HOLD_CENTER_TOLERANCE = 50
 
+# Horizontal distance left of the quest-journal book anchor to the quest-name
+# text that triggers auto-pathing when tapped.
+_QUEST_NAME_TAP_OFFSET_X = 150
+
 
 class QuestMixin(AFKJourneyBase, ABC):
     """Assist Mixin."""
@@ -242,18 +246,38 @@ class QuestMixin(AFKJourneyBase, ABC):
         # Finally we click the quest nav icon to auto-path. We return False
         # as we need to increment the counter in case we get stuck clicking it
         if path:
-            nav_match = self.find_any_template(
-                ["quests/quest_nav", "quests/quest_nav_alt"],
-                threshold=ConfidenceValue("75%"),
-                grayscale=True,
-                crop_regions=CropRegions(left="44%", top="13%", bottom="75%"),
-            )
-            if nav_match is not None:
-                logging.info("Auto-pathing")
-                self.tap(nav_match, scale=True)
-                sleep(10)
+            self._auto_path()
 
         return False
+
+    def _auto_path(self) -> None:
+        """Tap the quest tracker to auto-path towards the current objective."""
+        # New quest tracker UI: a journal book icon sits on the right of the
+        # card. Tapping the book opens the quest journal (wrong); tapping the
+        # quest-name text to its left auto-paths. Use the book as a stable
+        # anchor and tap left of it onto the text.
+        book = self.find_any_template(
+            ["quests/quest_nav_book"],
+            threshold=ConfidenceValue("80%"),
+            grayscale=True,
+            crop_regions=CropRegions(left="44%", top="13%", bottom="75%"),
+        )
+        if book is not None:
+            logging.info("Auto-pathing")
+            self.tap(Point(book.x - _QUEST_NAME_TAP_OFFSET_X, book.y))
+            sleep(10)
+            return
+
+        nav_match = self.find_any_template(
+            ["quests/quest_nav", "quests/quest_nav_alt"],
+            threshold=ConfidenceValue("75%"),
+            grayscale=True,
+            crop_regions=CropRegions(left="44%", top="13%", bottom="75%"),
+        )
+        if nav_match is not None:
+            logging.info("Auto-pathing")
+            self.tap(nav_match, scale=True)
+            sleep(10)
 
     def _handle_holding_buttons(self) -> bool:
         """Check for buttons on screen that we need to hold down."""
