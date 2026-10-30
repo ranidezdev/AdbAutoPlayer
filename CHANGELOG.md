@@ -1,7 +1,11 @@
 # Changelog
 
-## [12.13.4] - 2026-10-04
+## [12.13.7] - 2026-10-23
+
+### New Features
+
+- **AFK Journey – New heroes**: Added Estrilda, Marene and Baden to the hero list, so they can be recognized and selected.
 
 ### Bug Fixes
 
-- **Dailies – Hero Affinity**: A stray tap could leave the hero screens (e.g. into the shop) and the task kept tapping for hours waiting for Chippy. Each hero is now checked by name before tapping; if the hero screen is lost, the task tries to recover with Back and otherwise stops, and the loop is capped at the number of heroes.
+- **AFK Journey – Hero names**: Corrected the spelling of Isabella (previously "Isabelle") and Sylphira (previously "Sylphyra"), including their template images.
