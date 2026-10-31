@@ -578,7 +578,6 @@ class _TemplateMixin(_GameBase):
         threshold: ConfidenceValue | None = None,
         grayscale: bool = False,
         crop_regions: CropRegions | None = None,
-        scale: bool = False,  # TODO remove later
         delay: float = 10.0,
         max_tap_count: int = 3,
     ) -> None:
@@ -590,7 +589,6 @@ class _TemplateMixin(_GameBase):
             threshold (ConfidenceValue, optional): Confidence threshold.
             grayscale (bool, optional): Use grayscale matching.
             crop_regions (CropRegions | None, optional): Region to search within.
-            scale (bool, optional): Deprecated — does nothing.
             delay (float, optional): Minimum seconds between taps.
             max_tap_count (int, optional): Maximum taps before raising an error.
         """

@@ -82,7 +82,7 @@ class TestStartBattleGuard:
 
         assert bot._handle_dialogue_buttons(["quests/start_battle"]) is True
 
-        bot.tap_mock.assert_called_once_with(match, scale=True)
+        bot.tap_mock.assert_called_once_with(match)
         bot.navigate_mock.assert_not_called()
 
 

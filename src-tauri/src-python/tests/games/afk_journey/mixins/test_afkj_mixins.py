@@ -48,7 +48,6 @@ class MockAFKJ(ArenaMixin, SeasonLegendTrial):
     def tap(
         self,
         coordinates: Coordinates,
-        scale: bool = False,
         blocking: bool = True,
         non_blocking_sleep_duration: float | None = 1 / 30,
         log_message: str | None = None,

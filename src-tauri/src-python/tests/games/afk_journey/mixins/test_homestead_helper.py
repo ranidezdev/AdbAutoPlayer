@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 from adb_auto_player.exceptions import GameTimeoutError
 from adb_auto_player.games.afk_journey.mixins.homestead_helper import (
     HomesteadHelperMixin,
@@ -309,6 +310,12 @@ class TestHandleCraftingToMax:
                 bot, "wait_for_any_template", side_effect=[ready_result, grey_result]
             ),
             patch.object(bot, "tap"),
+            patch.object(bot, "_confirm_crafting_screen", return_value=True),
+            patch.object(bot, "_action_button_is_disabled", side_effect=[False, True]),
+            patch.object(bot, "_conclude_if_no_stamina"),
+            patch.object(
+                bot, "_craft_missing_ingredient_via_arrow", return_value=False
+            ),
             patch.object(
                 bot, "_homestead_craft_stop_condition_reached", return_value=False
             ),
@@ -342,6 +349,12 @@ class TestHandleCraftingToMax:
                 bot, "wait_for_any_template", side_effect=[ready_result, grey_result]
             ),
             patch.object(bot, "tap"),
+            patch.object(bot, "_confirm_crafting_screen", return_value=True),
+            patch.object(bot, "_action_button_is_disabled", side_effect=[False, True]),
+            patch.object(bot, "_conclude_if_no_stamina"),
+            patch.object(
+                bot, "_craft_missing_ingredient_via_arrow", return_value=False
+            ),
             patch.object(
                 bot, "_homestead_craft_stop_condition_reached", return_value=True
             ),
@@ -401,6 +414,54 @@ class TestCraftIngredientBatch:
             assert bot._craft_ingredient_batch() is False
 
         mock_back.assert_called_once()
+
+
+class TestFulfillSelectedRequestDeliver:
+    @staticmethod
+    def _find_only(bot, *visible):
+        def _find(template, **_):
+            return MagicMock(template=template) if template in visible else None
+
+        return patch.object(bot, "game_find_template_match", side_effect=_find)
+
+    def test_quick_select_not_reappearing_still_counts_as_delivered(self):
+        bot = _Stub()
+
+        with (
+            self._find_only(
+                bot,
+                bot.HOMESTEAD_QUICK_SELECT_TEMPLATE,
+                bot.HOMESTEAD_DELIVER_TEMPLATE,
+            ),
+            patch.object(bot, "tap"),
+            patch.object(bot, "wait_for_template", side_effect=GameTimeoutError("x")),
+            patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
+        ):
+            result = bot._fulfill_selected_request()
+
+        assert result is _RequestFulfillment.DELIVERED
+
+    def test_unexpected_error_after_delivery_is_not_swallowed(self):
+        """Regression test: only the Quick Select timeout may be ignored.
+
+        Previously a bare ``except Exception`` also swallowed unrelated
+        failures (e.g. a lost device connection) and reported the order as
+        delivered.
+        """
+        bot = _Stub()
+
+        with (
+            self._find_only(
+                bot,
+                bot.HOMESTEAD_QUICK_SELECT_TEMPLATE,
+                bot.HOMESTEAD_DELIVER_TEMPLATE,
+            ),
+            patch.object(bot, "tap"),
+            patch.object(bot, "wait_for_template", side_effect=RuntimeError("adb")),
+            patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
+            pytest.raises(RuntimeError),
+        ):
+            bot._fulfill_selected_request()
 
 
 class TestFulfillRequestsBestFirstBlocked:

@@ -45,7 +45,6 @@ class _InputMixin(_GameBase):
     def tap(
         self,
         coordinates: Coordinates,
-        scale: bool = False,  # TODO remove later
         blocking: bool = True,
         # Assuming 30 FPS, 1 Tap per Frame
         non_blocking_sleep_duration: float | None = 1 / 30,
@@ -56,7 +55,6 @@ class _InputMixin(_GameBase):
 
         Args:
             coordinates (Coordinates): Point to click on.
-            scale (bool, optional): Deprecated — does nothing.
             blocking (bool, optional): Whether to block until ADB confirms the tap.
             non_blocking_sleep_duration (float, optional): Sleep time in seconds for
                 non-blocking taps, needed to not DoS the ADB server.

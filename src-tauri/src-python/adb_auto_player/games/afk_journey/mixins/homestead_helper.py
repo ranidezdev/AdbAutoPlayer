@@ -857,7 +857,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
                     timeout=15,
                     timeout_message="Quick Select did not reappear after delivery.",
                 )
-            except Exception:
+            except GameTimeoutError:
                 logging.warning("Quick Select did not reappear after delivery.")
             SummaryGenerator.increment("Homestead Orders Helper", "Orders Delivered")
             return _RequestFulfillment.DELIVERED

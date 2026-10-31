@@ -97,7 +97,6 @@ class _GameBase(ABC):
     def tap(
         self,
         coordinates: Coordinates,
-        scale: bool = False,
         blocking: bool = True,
         non_blocking_sleep_duration: float | None = 1 / 30,
         log_message: str | None = None,
@@ -213,7 +212,6 @@ class _GameBase(ABC):
         threshold: ConfidenceValue | None = None,
         grayscale: bool = False,
         crop_regions: CropRegions | None = None,
-        scale: bool = False,
         delay: float = 10.0,
         max_tap_count: int = 3,
     ) -> None: ...

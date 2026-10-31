@@ -111,7 +111,7 @@ class QuestMixin(AFKJourneyBase, ABC):
         farewell = self.game_find_template_match(template="quests/farewell.png")
         if farewell:
             logging.warning("Non-quest dialogue found, clearing")
-            self.tap(farewell, scale=True)
+            self.tap(farewell)
             sleep(2)
             # Manually path away from the dialogue
             self.tap(Point(880, 365))
@@ -245,7 +245,7 @@ class QuestMixin(AFKJourneyBase, ABC):
         )
         if track_button is not None:
             logging.info("Tapping Track button")
-            self.tap(track_button, scale=True)
+            self.tap(track_button)
             sleep(2)
             return True
 
@@ -285,7 +285,7 @@ class QuestMixin(AFKJourneyBase, ABC):
         )
         if nav_match is not None:
             logging.info("Auto-pathing")
-            self.tap(nav_match, scale=True)
+            self.tap(nav_match)
             sleep(10)
 
     def _handle_holding_buttons(self) -> bool:
@@ -348,7 +348,7 @@ class QuestMixin(AFKJourneyBase, ABC):
         )
         if checkmark is not None:
             logging.info("Clicking checkmarked dialogue choice")
-            self.tap(checkmark, scale=True)
+            self.tap(checkmark)
             sleep(1)
             return True
 
@@ -369,7 +369,7 @@ class QuestMixin(AFKJourneyBase, ABC):
             "Clicking button: "
             + result.template.split("/")[-1].replace("_", " ").capitalize()
         )
-        self.tap(result, scale=True)
+        self.tap(result)
         if result.template == "quests/start_battle":
             self.handle_popup_messages()
             logging.info("Waiting for battle to finish")
@@ -402,7 +402,7 @@ class QuestMixin(AFKJourneyBase, ABC):
             grayscale=True,
         ):
             logging.info("Ancestral Sense quest — opening gesture menu")
-            self.tap(gesture_button, scale=True)
+            self.tap(gesture_button)
             sleep(2)
             magic_tab = self.find_any_template(
                 ["quests/gesture_magic_tab"],
@@ -410,7 +410,7 @@ class QuestMixin(AFKJourneyBase, ABC):
             )
             if magic_tab is not None:
                 logging.info("Navigating to Magic tab")
-                self.tap(magic_tab, scale=True)
+                self.tap(magic_tab)
                 sleep(1)
             wolf_form = self.find_any_template(
                 ["quests/gesture_wolf_form"],
@@ -418,7 +418,7 @@ class QuestMixin(AFKJourneyBase, ABC):
             )
             if wolf_form is not None:
                 logging.info("Clicking Wolf Form gesture")
-                self.tap(wolf_form, scale=True)
+                self.tap(wolf_form)
                 sleep(2)
                 sense_button = self.find_any_template(
                     ["quests/ancestral_sense_button"],
@@ -426,7 +426,7 @@ class QuestMixin(AFKJourneyBase, ABC):
                 )
                 if sense_button is not None:
                     logging.info("Pressing Ancestral Sense ability button")
-                    self.tap(sense_button, scale=True)
+                    self.tap(sense_button)
                     sleep(2)
             return
 
@@ -436,7 +436,7 @@ class QuestMixin(AFKJourneyBase, ABC):
             grayscale=True,
         ):
             logging.info("Transform quest — opening gesture menu")
-            self.tap(gesture_button, scale=True)
+            self.tap(gesture_button)
             sleep(2)
             magic_tab = self.find_any_template(
                 ["quests/gesture_magic_tab"],
@@ -444,7 +444,7 @@ class QuestMixin(AFKJourneyBase, ABC):
             )
             if magic_tab is not None:
                 logging.info("Navigating to Magic tab")
-                self.tap(magic_tab, scale=True)
+                self.tap(magic_tab)
                 sleep(1)
             wolf_form = self.find_any_template(
                 ["quests/gesture_wolf_form"],
@@ -452,12 +452,12 @@ class QuestMixin(AFKJourneyBase, ABC):
             )
             if wolf_form is not None:
                 logging.info("Clicking Wolf Form (Transform)")
-                self.tap(wolf_form, scale=True)
+                self.tap(wolf_form)
                 sleep(2)
             return
 
         logging.info("Gesture quest — opening emote menu")
-        self.tap(gesture_button, scale=True)
+        self.tap(gesture_button)
         sleep(2)
         quest_gesture = self.find_any_template(
             [
@@ -469,7 +469,7 @@ class QuestMixin(AFKJourneyBase, ABC):
         )
         if quest_gesture is not None:
             logging.info("Clicking quest gesture")
-            self.tap(quest_gesture, scale=True)
+            self.tap(quest_gesture)
             sleep(2)
 
     def _handle_special_quest_actions(self) -> bool:
