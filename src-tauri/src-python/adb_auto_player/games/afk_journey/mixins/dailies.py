@@ -21,6 +21,13 @@ from .legend_trial import SeasonLegendTrial
 
 _UNKNOWN_HERO = "Unknown"
 _LAST_AFFINITY_HERO = "Chippy"
+# Acorn companion shown before Chippy that is not in the tracker's hero list.
+_HAMMIE = "Hammie"
+_HAMMIE_TEMPLATE = "dailies/resonating_hall/hammie.png"
+# "Use one finger to rotate..." hint of the 3D model viewer, which a stray
+# affinity tap sometimes opens.
+_MODEL_VIEWER_TEMPLATE = "dailies/resonating_hall/model_viewer.png"
+_MODEL_VIEWER_BACK_POINT = Point(105, 1795)
 # Headroom over the downloaded hero list for heroes not yet in the tracker
 _AFFINITY_EXTRA_HEROES = 20
 _HERO_NAME_READ_ATTEMPTS = 2
@@ -521,19 +528,26 @@ class DailiesMixin(
         sleep(5)
 
         max_heroes = len(scanner.canonical_hero_names) + _AFFINITY_EXTRA_HEROES
+        first_hero: str | None = None
+        previous_hero: str | None = None
         for _ in range(max_heroes):
             hero = self._read_affinity_hero(scanner)
             if hero == _UNKNOWN_HERO:
-                # Usually a popup opened by a stray tap: back closes it
-                logging.warning("Not on a hero screen. Pressing back to recover.")
                 self.capture_debug_screenshot("affinity_not_on_hero_screen")
-                self.press_back_button()
-                sleep(2)
+                self._recover_affinity_hero_screen()
                 hero = self._read_affinity_hero(scanner)
             if hero == _UNKNOWN_HERO:
                 logging.error("Not on a hero screen. Stopping affinity.")
                 self.navigate_to_world()
                 return
+            if hero == first_hero and previous_hero != first_hero:
+                # Safety net should the last hero ever change: the list wraps
+                # around to the first hero after the last one. A repeated
+                # first hero only means a missed "next" tap.
+                logging.info("Back at the first hero - done raising affinity.")
+                return
+            first_hero = first_hero or hero
+            previous_hero = hero
             logging.debug(f"Raising affinity: {hero}")
             self._click_hero()
             if hero == _LAST_AFFINITY_HERO:
@@ -549,12 +563,26 @@ class DailiesMixin(
         for attempt in range(_HERO_NAME_READ_ATTEMPTS):
             if self.game_find_template_match("dailies/resonating_hall/chippy.png"):
                 return _LAST_AFFINITY_HERO
+            if self.game_find_template_match(_HAMMIE_TEMPLATE):
+                return _HAMMIE
             hero = scanner.read_hero_name(self.get_screenshot())
             if hero != _UNKNOWN_HERO:
                 return hero
             if attempt + 1 < _HERO_NAME_READ_ATTEMPTS:
                 sleep(1)
         return _UNKNOWN_HERO
+
+    def _recover_affinity_hero_screen(self) -> None:
+        """Return to the hero screen after a stray tap left it."""
+        if self.game_find_template_match(_MODEL_VIEWER_TEMPLATE, grayscale=True):
+            # The device back button leaves the hero list entirely here.
+            logging.info("3D model viewer opened by a stray tap - closing it.")
+            self.tap(_MODEL_VIEWER_BACK_POINT)
+        else:
+            # Usually a popup opened by a stray tap: back closes it
+            logging.warning("Not on a hero screen. Pressing back to recover.")
+            self.press_back_button()
+        sleep(2)
 
     def _click_hero(self) -> None:
         """Click a hero for affinity and go next."""

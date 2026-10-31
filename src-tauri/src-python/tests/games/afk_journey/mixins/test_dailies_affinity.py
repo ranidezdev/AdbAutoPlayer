@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 from adb_auto_player.games.afk_journey.mixins.dailies import DailiesMixin
+from adb_auto_player.models.geometry import Point
 
 _MODULE = "adb_auto_player.games.afk_journey.mixins.dailies"
 
@@ -98,3 +99,66 @@ class TestRaiseHeroAffinity:
 
         bot.tap_mock.assert_not_called()
         bot.click_hero_mock.assert_not_called()
+
+
+def _only(template: str):
+    """game_find_template_match fake that matches just ``template``."""
+    return lambda t, **_: MagicMock(template=t) if t == template else None
+
+
+class TestAffinityRecovery:
+    def test_hammie_is_recognised_although_missing_from_the_hero_list(self):
+        """Regression test: Hammie (Acorn Mage) stopped affinity daily.
+
+        The companion is not in the tracker's hero list, so it was read as
+        "Unknown" and affinity aborted before reaching Chippy.
+        """
+        bot = _Stub()
+        bot.template_mock.side_effect = _only("dailies/resonating_hall/hammie.png")
+        scanner = _scanner([])
+
+        assert bot._read_affinity_hero(scanner) == "Hammie"
+        scanner.read_hero_name.assert_not_called()
+
+    def test_affinity_continues_past_hammie_to_chippy(self):
+        bot = _Stub()
+        with patch.object(
+            bot, "_read_affinity_hero", side_effect=["Odie", "Hammie", "Chippy"]
+        ):
+            _run(bot, _scanner([]))
+
+        assert bot.click_hero_mock.call_count == 3
+        bot.capture_mock.assert_not_called()
+
+    def test_model_viewer_is_closed_with_the_on_screen_back_arrow(self):
+        """Regression test: the device back button left the hero list."""
+        bot = _Stub()
+        bot.template_mock.side_effect = _only(
+            "dailies/resonating_hall/model_viewer.png"
+        )
+        _run(bot, _scanner(["Odie", "Unknown", "Unknown", "Rowan", "Chippy"]))
+
+        bot.back_mock.assert_not_called()
+        assert any(c.args == (Point(105, 1795),) for c in bot.tap_mock.call_args_list)
+        assert bot.click_hero_mock.call_count == 3
+
+    def test_stops_when_the_list_wraps_around(self):
+        bot = _Stub()
+        with patch.object(
+            bot, "_read_affinity_hero", side_effect=["Odie", "Rowan", "Odie"]
+        ):
+            _run(bot, _scanner([]))
+
+        assert bot.click_hero_mock.call_count == 2
+        bot.capture_mock.assert_not_called()
+
+    def test_missed_next_tap_on_the_first_hero_does_not_stop(self):
+        bot = _Stub()
+        with patch.object(
+            bot,
+            "_read_affinity_hero",
+            side_effect=["Odie", "Odie", "Rowan", "Chippy"],
+        ):
+            _run(bot, _scanner([]))
+
+        assert bot.click_hero_mock.call_count == 4
