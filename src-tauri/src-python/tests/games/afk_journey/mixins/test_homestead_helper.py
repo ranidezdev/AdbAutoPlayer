@@ -30,6 +30,16 @@ class _Stub(HomesteadHelperMixin):
     def get_screenshot(self):
         return np.zeros((10, 10, 3), dtype=np.uint8)
 
+    @property
+    def template_timeout(self) -> float:
+        return 1.0
+
+    def sleep_action(self) -> None:
+        pass
+
+    def sleep_navigation(self) -> None:
+        pass
+
 
 class TestReadHomesteadStamina:
     def test_confirms_value_once_two_reads_agree(self):
@@ -376,6 +386,7 @@ class TestCraftIngredientBatch:
         with (
             patch.object(bot, "wait_for_any_template"),
             patch.object(bot, "wait_for_template"),
+            patch.object(bot, "wait_until_template_disappears") as mock_disappear,
             patch.object(bot, "tap"),
             patch.object(bot, "_conclude_if_no_stamina"),
             patch.object(bot, "press_back_button") as mock_back,
@@ -384,6 +395,7 @@ class TestCraftIngredientBatch:
             assert bot._craft_ingredient_batch() is True
 
         bot.device.swipe.assert_called_once()
+        mock_disappear.assert_called_once()
         mock_back.assert_called_once()
 
     def test_screen_never_loads_returns_false(self):
@@ -418,24 +430,30 @@ class TestCraftIngredientBatch:
 
 class TestFulfillSelectedRequestDeliver:
     @staticmethod
-    def _find_only(bot, *visible):
-        def _find(template, **_):
-            return MagicMock(template=template) if template in visible else None
+    def _outcome(bot, template):
+        """Quick Select is visible; after tapping it ``template`` shows up."""
 
-        return patch.object(bot, "game_find_template_match", side_effect=_find)
+        def _wait(templates, **_):
+            return MagicMock(template=template) if template in templates else None
+
+        return (
+            patch.object(
+                bot,
+                "game_find_template_match",
+                return_value=MagicMock(template=bot.HOMESTEAD_QUICK_SELECT_TEMPLATE),
+            ),
+            patch.object(bot, "_wait_for_optional", side_effect=_wait),
+        )
 
     def test_quick_select_not_reappearing_still_counts_as_delivered(self):
         bot = _Stub()
+        find, wait = self._outcome(bot, bot.HOMESTEAD_DELIVER_TEMPLATE)
 
         with (
-            self._find_only(
-                bot,
-                bot.HOMESTEAD_QUICK_SELECT_TEMPLATE,
-                bot.HOMESTEAD_DELIVER_TEMPLATE,
-            ),
+            find,
+            wait,
             patch.object(bot, "tap"),
             patch.object(bot, "wait_for_template", side_effect=GameTimeoutError("x")),
-            patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
         ):
             result = bot._fulfill_selected_request()
 
@@ -449,19 +467,84 @@ class TestFulfillSelectedRequestDeliver:
         delivered.
         """
         bot = _Stub()
+        find, wait = self._outcome(bot, bot.HOMESTEAD_DELIVER_TEMPLATE)
 
         with (
-            self._find_only(
-                bot,
-                bot.HOMESTEAD_QUICK_SELECT_TEMPLATE,
-                bot.HOMESTEAD_DELIVER_TEMPLATE,
-            ),
+            find,
+            wait,
             patch.object(bot, "tap"),
             patch.object(bot, "wait_for_template", side_effect=RuntimeError("adb")),
-            patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
             pytest.raises(RuntimeError),
         ):
             bot._fulfill_selected_request()
+
+    def test_missing_resources_navigates_to_crafting(self):
+        bot = _Stub()
+        find, wait = self._outcome(bot, bot.HOMESTEAD_MISSING_RESOURCES_TEMPLATE)
+
+        with (
+            find,
+            wait,
+            patch.object(bot, "tap"),
+            patch.object(bot, "_handle_crafting_to_max", return_value=True),
+        ):
+            assert bot._fulfill_selected_request() is _RequestFulfillment.CRAFTED
+
+    def test_nothing_happens_returns_nothing(self):
+        bot = _Stub()
+        find, wait = self._outcome(bot, "unrelated.png")
+
+        with find, wait, patch.object(bot, "tap"):
+            assert bot._fulfill_selected_request() is _RequestFulfillment.NOTHING
+
+
+class TestCraftMissingIngredientViaArrow:
+    def test_no_arrow_within_timeout_returns_false(self):
+        bot = _Stub()
+
+        with (
+            patch.object(bot, "_wait_for_optional", return_value=None) as mock_wait,
+            patch.object(bot, "_craft_ingredient_batch") as mock_craft,
+        ):
+            assert bot._craft_missing_ingredient_via_arrow() is False
+
+        assert (
+            mock_wait.call_args.kwargs["timeout"] == bot.HOMESTEAD_ARROW_DETECT_TIMEOUT
+        )
+        mock_craft.assert_not_called()
+
+    def test_arrow_found_crafts_ingredient(self):
+        bot = _Stub()
+        arrow = MagicMock()
+
+        with (
+            patch.object(bot, "_wait_for_optional", return_value=arrow),
+            patch.object(bot, "tap") as mock_tap,
+            patch.object(bot, "_craft_ingredient_batch") as mock_craft,
+        ):
+            assert bot._craft_missing_ingredient_via_arrow() is True
+
+        mock_tap.assert_called_once_with(arrow)
+        mock_craft.assert_called_once()
+
+
+class TestWaitForOptional:
+    def test_timeout_returns_none(self):
+        bot = _Stub()
+
+        with patch.object(
+            bot, "wait_for_any_template", side_effect=GameTimeoutError("x")
+        ):
+            assert bot._wait_for_optional(["a.png"], timeout=1) is None
+
+    def test_match_is_returned(self):
+        bot = _Stub()
+        match = MagicMock()
+
+        with patch.object(bot, "wait_for_any_template", return_value=match) as mock:
+            assert bot._wait_for_optional(["a.png"], timeout=2, grayscale=True) is match
+
+        mock.assert_called_once_with(templates=["a.png"], timeout=2, grayscale=True)
 
 
 class TestFulfillRequestsBestFirstBlocked:

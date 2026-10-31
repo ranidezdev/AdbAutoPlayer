@@ -2,6 +2,7 @@
 
 import logging
 import re
+from collections.abc import Callable
 from enum import Enum
 from itertools import pairwise
 from time import sleep
@@ -38,6 +39,10 @@ class _RequestFulfillment(Enum):
 
 class HomesteadHelperMixin(AFKJourneyBase):
     """Homestead helper mixin."""
+
+    # Lazily created OCR backends, see _get_ocr_backend.
+    _homestead_ocr_backend: RapidOCRBackend | None = None
+    _homestead_stamina_ocr_backend: RapidOCRBackend | None = None
 
     # Templates - resource collection
     HOMESTEAD_OVERVIEW_CHECK_TEMPLATE = "homestead/homestead_overview_check.png"
@@ -191,9 +196,9 @@ class HomesteadHelperMixin(AFKJourneyBase):
     HOMESTEAD_INNER_LOOP_LIMIT = 25
     # Abort ingredient crafting if nothing progresses within this many seconds.
     HOMESTEAD_INGREDIENT_CRAFT_TIMEOUT = 30
-    # Attempts (each followed by 0.5s) to detect the insufficient-resources popup
-    # arrow after tapping a craft/action button before assuming crafting started.
-    HOMESTEAD_ARROW_DETECT_ATTEMPTS = 6
+    # Seconds to wait for the insufficient-resources popup arrow after tapping a
+    # craft/action button before assuming crafting started.
+    HOMESTEAD_ARROW_DETECT_TIMEOUT = 3.0
     # Attempts (each followed by 0.5s) to confirm the crafting screen is present
     # and stable after navigation before interacting with the multiplier button.
     # The player walks to the crafting building first, so the screen only appears
@@ -324,7 +329,12 @@ class HomesteadHelperMixin(AFKJourneyBase):
                     "Tapping homestead enter button (attempt %d).", attempt + 1
                 )
                 self.tap(enter)
-                sleep(4)  # wait for homestead to load
+                if self._wait_for_optional(
+                    [self.HOMESTEAD_OVERVIEW_CHECK_TEMPLATE],
+                    timeout=self.navigation_timeout,
+                ):
+                    logging.info("Entered homestead.")
+                    return
                 continue
 
             # We are inside a sub-screen (crafting, requests, etc.).
@@ -334,12 +344,14 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 "Sub-screen detected (attempt %d) - pressing back.", attempt + 1
             )
             self.press_back_button()
-            sleep(2)
-            cancel = self.game_find_template_match(template="cancel.png")
-            if cancel is not None:
+            screen = self._wait_for_optional(
+                ["cancel.png", self.HOMESTEAD_OVERVIEW_CHECK_TEMPLATE],
+                timeout=self.fast_timeout,
+            )
+            if screen is not None and screen.template == "cancel.png":
                 logging.info("Exit dialog detected - dismissing with Cancel.")
-                self.tap(cancel)
-                sleep(2)
+                self.tap(screen)
+                self.sleep_navigation()
 
         raise GameTimeoutError("Could not navigate to homestead after 10 attempts.")
 
@@ -351,66 +363,26 @@ class HomesteadHelperMixin(AFKJourneyBase):
         """Open Buildings -> Mine -> Go -> Harvest All."""
         logging.info("Collecting homestead resources...")
 
-        # Open the management panel and navigate to the Buildings tab.
-        # The panel may already be open after navigation, so we try to find
-        # the Buildings tab first.  If it isn't visible, tap the stacked-coins
-        # icon to toggle the panel open and try again (up to 3 times).
-        sleep(2)  # let the UI settle after navigate_to_homestead
-        buildings_tab = None
-        for attempt in range(3):
-            buildings_tab = self.game_find_template_match(
-                template=self.HOMESTEAD_BUILDINGS_TAB_TEMPLATE
-            )
-            if buildings_tab is not None:
-                break
-            # Panel not open yet - find and tap the stacked-coins icon.
-            overview_icon = self.game_find_template_match(
-                template=self.HOMESTEAD_OVERVIEW_CHECK_TEMPLATE
-            )
-            if overview_icon is None:
-                logging.warning(
-                    "Neither Buildings tab nor overview icon found (attempt %d).",
-                    attempt + 1,
-                )
-                sleep(2)
-                continue
-            logging.info(
-                "Tapping stacked-coins icon to open panel (attempt %d).", attempt + 1
-            )
-            self.tap(overview_icon)
-            sleep(3)  # wait for the panel animation to finish
-
+        buildings_tab = self._open_buildings_tab()
         if buildings_tab is None:
             logging.warning("Could not open the homestead management panel.")
             return
 
         self.tap(buildings_tab)
-        sleep(2)
-
-        # Scroll down until a Mine building card is visible.
-        mine = None
-        for _ in range(self.HOMESTEAD_MINE_SCROLL_ATTEMPTS):
-            mine = self.game_find_template_match(
-                template=self.HOMESTEAD_MINE_TEMPLATE,
-                threshold=ConfidenceValue("75%"),
-                grayscale=True,
-            )
-            if mine is not None:
-                break
-            self.swipe_up(x=540, sy=1500, ey=700)
-            sleep(1.5)
-
+        mine = self._find_mine_building()
         if mine is None:
             logging.warning(
                 "Mine building not found after scrolling"
                 " - skipping resource collection."
             )
             self.press_back_button()
-            sleep(1)
+            self.sleep_action()
             return
 
         self.tap(mine)
-        sleep(2)
+        # The building cards share the green button style, so give the Mine's
+        # detail view a moment before looking for its Go button.
+        self.sleep_action()
 
         # Press the green "Go" button to navigate to the Mine in the world.
         go_button = self.wait_for_template(
@@ -419,7 +391,6 @@ class HomesteadHelperMixin(AFKJourneyBase):
             timeout_message="Could not find Mine Go button.",
         )
         self.tap(go_button)
-        sleep(3)
 
         # Wait for the Harvest All button and press it.
         # Use a lower threshold and restrict to the left half of the screen
@@ -433,12 +404,96 @@ class HomesteadHelperMixin(AFKJourneyBase):
             timeout_message="Harvest All button not found.",
         )
         self.tap(harvest_all)
-        sleep(4)  # wait for harvest animation and camera to settle
+        self.sleep_navigation()  # harvest animation and camera movement
 
         self._conclude_if_no_stamina()
 
         SummaryGenerator.increment("Homestead Orders Helper", "Resources Harvested")
         logging.info("Resources harvested.")
+
+    def _open_buildings_tab(self) -> TemplateMatchResult | None:
+        """Find the Buildings tab, opening the management panel if needed.
+
+        The panel may already be open after navigation. Otherwise the
+        stacked-coins overview icon toggles it open.
+
+        Returns:
+            The Buildings tab match, or None if the panel could not be opened.
+        """
+        for attempt in range(3):
+            match = self._wait_for_optional(
+                [
+                    self.HOMESTEAD_BUILDINGS_TAB_TEMPLATE,
+                    self.HOMESTEAD_OVERVIEW_CHECK_TEMPLATE,
+                ],
+                timeout=self.fast_timeout,
+            )
+            if match is None:
+                logging.warning(
+                    "Neither Buildings tab nor overview icon found (attempt %d).",
+                    attempt + 1,
+                )
+                continue
+            if match.template == self.HOMESTEAD_BUILDINGS_TAB_TEMPLATE:
+                return match
+            logging.info(
+                "Tapping stacked-coins icon to open panel (attempt %d).", attempt + 1
+            )
+            self.tap(match)
+            tab = self._wait_for_optional(
+                [self.HOMESTEAD_BUILDINGS_TAB_TEMPLATE], timeout=self.fast_timeout
+            )
+            if tab is not None:
+                return tab
+        return None
+
+    def _find_mine_building(self) -> TemplateMatchResult | None:
+        """Find the Mine card on the Buildings tab, scrolling down if needed.
+
+        Returns:
+            The Mine card match, or None if it was not found.
+        """
+        mine_kwargs = {
+            "threshold": ConfidenceValue("75%"),
+            "grayscale": True,
+        }
+        # The tab content loads after the tab tap; poll for it before scrolling.
+        mine = self._wait_for_optional(
+            [self.HOMESTEAD_MINE_TEMPLATE], timeout=self.fast_timeout, **mine_kwargs
+        )
+        for _ in range(self.HOMESTEAD_MINE_SCROLL_ATTEMPTS - 1):
+            if mine is not None:
+                return mine
+            self.swipe_up(x=540, sy=1500, ey=700)
+            sleep(1.5)  # scroll inertia
+            mine = self.game_find_template_match(
+                template=self.HOMESTEAD_MINE_TEMPLATE, **mine_kwargs
+            )
+        return mine
+
+    def _wait_for_optional(
+        self,
+        templates: list[str],
+        timeout: float,
+        **kwargs,
+    ) -> TemplateMatchResult | None:
+        """Poll for any of ``templates``; return None instead of timing out."""
+        try:
+            return self.wait_for_any_template(
+                templates=templates, timeout=timeout, **kwargs
+            )
+        except GameTimeoutError:
+            return None
+
+    def _get_ocr_backend(
+        self, attribute: str, factory: Callable[[], RapidOCRBackend]
+    ) -> RapidOCRBackend:
+        """Return the OCR backend cached on ``attribute``, creating it once."""
+        backend = getattr(self, attribute, None)
+        if backend is None:
+            backend = factory()
+            setattr(self, attribute, backend)
+        return backend
 
     # ------------------------------------------------------------------ #
     #  Orders / Requests                                                   #
@@ -473,8 +528,11 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 return
 
             # Verify Requests icon is visible before tapping fixed coordinate.
-            requests_visible = self.game_find_template_match(
-                template=self.HOMESTEAD_REQUESTS_TEMPLATE,
+            # Polled rather than checked once: the camera may still be moving
+            # after a harvest or a craft trip.
+            requests_visible = self._wait_for_optional(
+                [self.HOMESTEAD_REQUESTS_TEMPLATE],
+                timeout=self.fast_timeout,
                 threshold=ConfidenceValue("60%"),
                 grayscale=True,
                 crop_regions=CropRegions(right=0.75, top=0.55),
@@ -485,7 +543,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
 
             logging.info("Tapping Requests icon.")
             self.tap(self.HOMESTEAD_REQUESTS_POINT)
-            sleep(2)
+            self.sleep_navigation()
 
             crafted_this_round = self._fulfill_requests_best_first()
 
@@ -499,7 +557,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
             # No missing-resource craft needed - nothing left to do.
             logging.info("No orders remaining - done.")
             self.press_back_button()
-            sleep(2)
+            self.sleep_navigation()
             return
 
         logging.info("Homestead requests: reached outer loop limit.")
@@ -561,10 +619,9 @@ class HomesteadHelperMixin(AFKJourneyBase):
         Returns:
             The current Stamina amount, or None if it could not be confirmed.
         """
-        backend = getattr(self, "_homestead_stamina_ocr_backend", None)
-        if backend is None:
-            backend = RapidOCRBackend.pp_ocr_v5_rec()
-            self._homestead_stamina_ocr_backend = backend
+        backend = self._get_ocr_backend(
+            "_homestead_stamina_ocr_backend", RapidOCRBackend.pp_ocr_v5_rec
+        )
 
         x1, y1, x2, y2 = self.HOMESTEAD_STAMINA_CROP
         last_candidate: int | None = None
@@ -656,10 +713,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
             Mapping of portrait index (0-based) to Wish Point value. Portraits
             in ``exclude`` or whose number could not be read are omitted.
         """
-        backend = getattr(self, "_homestead_ocr_backend", None)
-        if backend is None:
-            backend = RapidOCRBackend()
-            self._homestead_ocr_backend = backend
+        backend = self._get_ocr_backend("_homestead_ocr_backend", RapidOCRBackend)
 
         x1, y1, x2, y2 = self.HOMESTEAD_REWARDS_CROP
         for index, point in enumerate(self.HOMESTEAD_REQUEST_PORTRAIT_POINTS):
@@ -803,7 +857,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
             candidates[best_index],
         )
         self.tap(self.HOMESTEAD_REQUEST_PORTRAIT_POINTS[best_index])
-        sleep(1.5)  # let the selection settle before Quick Select
+        self.sleep_action()  # let the selection settle before Quick Select
         return best_index
 
     def _fulfill_selected_request(self) -> _RequestFulfillment:
@@ -826,29 +880,40 @@ class HomesteadHelperMixin(AFKJourneyBase):
             return _RequestFulfillment.NOTHING
 
         self.tap(quick_select)
-        sleep(2)
-
-        # Check if the insufficient-resources popup appeared.
-        missing_arrow = self.game_find_template_match(
-            template=self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE
+        # Quick Select either raises the insufficient-resources popup or turns
+        # into the Deliver button; neither is visible before the tap. The
+        # settle delay gives the popup (which takes priority) time to animate
+        # in, so a Deliver button shown first is not tapped prematurely.
+        self.sleep_action()
+        outcome = self._wait_for_optional(
+            [
+                self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE,
+                self.HOMESTEAD_DELIVER_TEMPLATE,
+            ],
+            timeout=self.fast_timeout,
         )
-        if missing_arrow is not None:
+
+        if (
+            outcome is not None
+            and outcome.template == self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE
+        ):
             logging.info("Insufficient resources - navigating to crafting.")
-            self.tap(missing_arrow)
-            sleep(2)
+            self.tap(outcome)
             if self._handle_crafting_to_max():
                 return _RequestFulfillment.CRAFTED
             return _RequestFulfillment.BLOCKED
 
-        # No missing-resources popup: check for Deliver button.
-        deliver = self.game_find_template_match(
-            template=self.HOMESTEAD_DELIVER_TEMPLATE
-        )
-        if deliver is not None:
+        if outcome is not None:
             logging.info("Deliver button found - tapping.")
-            self.tap(deliver)
-            sleep(3)  # wait for reward popup to appear
-            # Tap the lower half of the screen to dismiss the reward popup.
+            self.tap(outcome)
+            # Dismiss the reward popup as soon as it shows; tapping the lower
+            # half of the screen closes it.
+            self._wait_for_optional(
+                [self.HOMESTEAD_INGREDIENT_TAP_TO_CLOSE_TEMPLATE],
+                timeout=self.fast_timeout,
+                threshold=ConfidenceValue("60%"),
+                grayscale=True,
+            )
             self.tap(Point(540, 1400))
             # Wait for Quick Select to reappear.
             try:
@@ -964,7 +1029,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
         if reached is not None:
             return reached
 
-        sleep(2)  # let the UI fully settle
+        self.sleep_action()  # let the action button colour settle
 
         # A grey action button means a required ingredient is missing but can be
         # crafted. The action-button templates cannot tell the grey and coloured
@@ -981,12 +1046,12 @@ class HomesteadHelperMixin(AFKJourneyBase):
         for tap_num in range(2):
             logging.debug("Tapping multiplier button (%d/2).", tap_num + 1)
             self.tap(self.HOMESTEAD_MULTIPLIER_BUTTON_POINT)
-            sleep(1.5)
+            self.sleep_action()
 
         # Tap the action button (Cook / Alchemize / Forge).
         logging.info("Tapping action button.")
         self.tap(self.HOMESTEAD_ACTION_BUTTON_POINT)
-        sleep(2)
+        self.sleep_action()
 
         # Out of stamina: the game shows the Stamina Bundle popup instead of
         # crafting. Conclude the mode.
@@ -1007,8 +1072,8 @@ class HomesteadHelperMixin(AFKJourneyBase):
         # crafting is complete. Once a batch is crafted a previously available
         # ingredient may run out, so the button can come back greyed-out. A
         # required resource can also turn out to be insufficient only once the
-        # craft is attempted.
-        sleep(3)
+        # craft is attempted. The missing-ingredient arrow check above already
+        # waited long enough for the action button to be swapped out.
         logging.info("Waiting for crafting to complete...")
         try:
             result = self.wait_for_any_template(
@@ -1080,7 +1145,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 "dismissing without crafting."
             )
             self.tap(self.HOMESTEAD_INSUFFICIENT_RESOURCES_CLOSE_POINT)
-            sleep(2)
+            self.sleep_navigation()
             return False
 
         logging.info(
@@ -1156,7 +1221,6 @@ class HomesteadHelperMixin(AFKJourneyBase):
         """
         logging.info("Process card upgrade available - accepting.")
         self.tap(popup_check)
-        sleep(2)
 
         try:
             upgrade_button = self.wait_for_template(
@@ -1176,7 +1240,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
 
         # Leave the Process Upgrade screen so the caller can return to Requests.
         self.press_back_button()
-        sleep(2)
+        self.sleep_navigation()
 
     # ------------------------------------------------------------------ #
     #  Missing-ingredient crafting                                         #
@@ -1197,14 +1261,13 @@ class HomesteadHelperMixin(AFKJourneyBase):
         # Tap the grey action button to open the missing-ingredient popup.
         logging.info("Tapping greyed-out action button.")
         self.tap(self.HOMESTEAD_GRAY_ACTION_BUTTON_POINT)
-        sleep(2)
 
         if not self._craft_missing_ingredient_via_arrow():
             logging.warning(
                 "Missing-ingredient popup arrow not found - aborting ingredient craft."
             )
             self.press_back_button()
-            sleep(2)
+            self.sleep_navigation()
 
     def _craft_missing_ingredient_via_arrow(self) -> bool:
         """Follow the missing-resource popup arrow and craft one ingredient batch.
@@ -1222,14 +1285,10 @@ class HomesteadHelperMixin(AFKJourneyBase):
             popup was present, i.e. nothing needed crafting.
         """
         # Wait briefly for the popup arrow to animate in before giving up.
-        arrow = None
-        for _ in range(self.HOMESTEAD_ARROW_DETECT_ATTEMPTS):
-            arrow = self.game_find_template_match(
-                template=self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE
-            )
-            if arrow is not None:
-                break
-            sleep(0.5)
+        arrow = self._wait_for_optional(
+            [self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE],
+            timeout=self.HOMESTEAD_ARROW_DETECT_TIMEOUT,
+        )
         if arrow is None:
             return False
 
@@ -1276,7 +1335,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 self.HOMESTEAD_INGREDIENT_CRAFT_TIMEOUT,
             )
             self.press_back_button()
-            sleep(2)
+            self.sleep_navigation()
             return False
 
         sleep(1.5)  # let the screen settle before grabbing the slider
@@ -1288,7 +1347,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
             Point(self.HOMESTEAD_SLIDER_END_X, self.HOMESTEAD_SLIDER_Y),
             duration=0.6,
         )
-        sleep(1.5)
+        self.sleep_action()
 
         # Press the green action button (Smelt / Shape / Refine).
         logging.info("Pressing ingredient craft button.")
@@ -1313,17 +1372,25 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 self.HOMESTEAD_INGREDIENT_CRAFT_TIMEOUT,
             )
             self.press_back_button()
-            sleep(2)
+            self.sleep_navigation()
             return False
 
         logging.info("Dismissing 'Tap to close' popup.")
         self.tap(self.HOMESTEAD_TAP_TO_CLOSE_POINT)
-        sleep(2)
+        try:
+            self.wait_until_template_disappears(
+                self.HOMESTEAD_INGREDIENT_TAP_TO_CLOSE_TEMPLATE,
+                threshold=ConfidenceValue("60%"),
+                grayscale=True,
+                timeout=self.fast_timeout,
+            )
+        except GameTimeoutError:
+            logging.debug("'Tap to close' popup still visible - pressing back.")
 
         SummaryGenerator.increment("Homestead Orders Helper", "Ingredients Crafted")
 
         # Navigate back to the homestead world view.
         logging.info("Returning from ingredient crafting.")
         self.press_back_button()
-        sleep(2)
+        self.sleep_navigation()
         return True
