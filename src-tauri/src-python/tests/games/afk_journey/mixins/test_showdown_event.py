@@ -162,3 +162,37 @@ class TestFrostfireFailedTeamExclusion:
             assert bot._handle_battle_result() is True
 
         assert bot._failed_hero_teams == list(self._HEROES)
+
+    def test_depleted_hero_is_not_matched_again(self):
+        """Regression test: a depleted hero must leave the search list.
+
+        Previously it stayed in ``available_heroes``, so every search found
+        the same depleted hero again and the selection loop never ended.
+        """
+        bot = _Frostfire()
+        depleted = "heroes/harak_battle"
+        good = list(self._HEROES)
+        calls = 0
+
+        def _find(templates, **_):
+            nonlocal calls
+            calls += 1
+            assert calls <= 10, "selection loop keeps matching the depleted hero"
+            if depleted in templates:
+                return MagicMock(template=depleted, x=0, y=0)
+            return MagicMock(template=good.pop(0), x=0, y=0)
+
+        with (
+            patch.object(bot, "find_any_template", side_effect=_find),
+            patch.object(
+                bot,
+                "_check_hero_stamina",
+                side_effect=lambda hero: hero.template != depleted,
+            ),
+            patch.object(bot, "tap"),
+            patch("adb_auto_player.games.afk_journey.mixins.frostfire_showdown.sleep"),
+        ):
+            bot._handle_hero_selection()
+
+        assert bot._last_selected_heroes == list(self._HEROES)
+        assert calls == len(self._HEROES) + 1

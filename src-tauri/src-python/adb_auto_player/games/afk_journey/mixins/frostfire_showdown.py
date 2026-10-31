@@ -438,6 +438,9 @@ class FrostfireShowdownMixin(_ShowdownEventMixin, ABC):
                 f"[Hero Selection] {hero_name} is depleted, "
                 "skipping and looking for next hero..."
             )
+            # Drop the hero for this selection so the search does not keep
+            # matching it forever.
+            available_heroes.remove(hero_checker.template)
             return "depleted"
 
         else:  # stamina_status is True
