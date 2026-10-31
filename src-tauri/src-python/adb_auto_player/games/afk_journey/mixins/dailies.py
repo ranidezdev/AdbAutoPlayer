@@ -389,8 +389,10 @@ class DailiesMixin(
             return
 
         logging.debug("Click Send & Receive.")
+        # Only shown while rewards are left; don't wait the full timeout for it.
         if self._try_wait_and_tap(
             "dailies/hamburger/send_receive.png",
+            timeout=self.fast_timeout,
             timeout_message="Friend rewards already claimed.",
         ):
             sleep(self.fast_timeout)
@@ -415,8 +417,11 @@ class DailiesMixin(
             return
 
         logging.debug("Click Read All.")
+        # Read All is only shown when there is mail, so a long wait for it is
+        # wasted time on the common "no mail" case.
         if self._try_wait_and_tap(
             "dailies/hamburger/read_all.png",
+            timeout=self.fast_timeout,
             timeout_message="No mail.",
         ):
             sleep(1)
