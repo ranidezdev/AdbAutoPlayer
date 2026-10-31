@@ -387,7 +387,6 @@ class DailiesMixin(
         ):
             logging.info(f"Failed to find Friends. Sadge. {self.LANG_ERROR}")
             return
-        sleep(1)
 
         logging.debug("Click Send & Receive.")
         if self._try_wait_and_tap(
@@ -414,7 +413,6 @@ class DailiesMixin(
         ):
             logging.error("Failed to find Mail.")
             return
-        sleep(1)
 
         logging.debug("Click Read All.")
         if self._try_wait_and_tap(
@@ -583,10 +581,9 @@ class DailiesMixin(
 
         # Navigate to Resonating Hall explicitly.
         self.navigate_to_world()
-        sleep(5)
+        self.sleep_navigation()
         logging.debug("Open Resonating Hall.")
         self.tap(Point(620, 1830))
-        sleep(5)
 
         logging.info("Begin swapping essences...")
 

@@ -163,7 +163,6 @@ class DreamRealmMixin(BaseClass):
             return
 
         self.tap(reward)
-        sleep(2)
 
         logging.debug("Click Tap to Close, if available.")
         if self._try_wait_and_tap(

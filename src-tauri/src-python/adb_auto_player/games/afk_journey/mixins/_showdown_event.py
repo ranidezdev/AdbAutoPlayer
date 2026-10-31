@@ -99,7 +99,7 @@ class _ShowdownEventMixin(AFKJourneyBase, ABC):
         self.tap(self._START_POINT)  # Continue/Battle
         sleep(2)
         self._tap_till_template_disappears(template="navigation/confirm")  # consumables
-        sleep(4)
+        self.sleep_action()
 
         # Clear all hero spots
         self.wait_for_template(template="start_battle")
@@ -115,6 +115,6 @@ class _ShowdownEventMixin(AFKJourneyBase, ABC):
         logging.info("Battling..")
         sleep(3)
         self._tap_till_template_disappears(template="navigation/confirm")  # Confirm
-        sleep(15)
 
+        # Polls for the victory/defeat screen for up to BATTLE_TIMEOUT.
         return self._handle_battle_result()
