@@ -18,6 +18,8 @@ class _Stub(HomesteadHelperMixin):
     def __init__(self) -> None:
         self._settings = MagicMock()
         self._device = MagicMock()
+        self.app_settings = MagicMock()
+        self.app_settings.advanced.navigation_delay = 2.0
 
     @property
     def settings(self):
@@ -205,7 +207,7 @@ class TestHandleInsufficientResourcesPopup:
         bot = _Stub()
 
         with (
-            patch.object(bot, "game_find_template_match", return_value=None),
+            patch.object(bot, "_wait_for_optional", return_value=None),
             patch.object(bot, "tap") as mock_tap,
             patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
         ):
@@ -221,13 +223,21 @@ class TestHandleInsufficientResourcesPopup:
         arrow_match = MagicMock()
 
         with (
-            patch.object(bot, "game_find_template_match", return_value=arrow_match),
+            patch.object(
+                bot, "_wait_for_optional", return_value=arrow_match
+            ) as mock_wait,
             patch.object(bot, "tap") as mock_tap,
             patch.object(
                 bot, "_craft_ingredient_batch", return_value=True
             ) as mock_craft,
         ):
             result = bot._handle_insufficient_resources_popup()
+
+        # Regression: the modal's arrow is polled while the modal animates in
+        # instead of being checked once on the first frame.
+        assert (
+            mock_wait.call_args.kwargs["timeout"] == bot.HOMESTEAD_ARROW_DETECT_TIMEOUT
+        )
 
         assert result is True
         mock_tap.assert_called_once_with(arrow_match)
@@ -479,16 +489,31 @@ class TestFulfillSelectedRequestDeliver:
             bot._fulfill_selected_request()
 
     def test_missing_resources_navigates_to_crafting(self):
+        """Regression test: settle before looking for the crafting screen.
+
+        Without the pause, crafting anchors matched briefly on the transition
+        screen and the request was skipped as "Crafting screen did not load".
+        """
         bot = _Stub()
         find, wait = self._outcome(bot, bot.HOMESTEAD_MISSING_RESOURCES_TEMPLATE)
+        calls: list[str] = []
 
         with (
             find,
             wait,
             patch.object(bot, "tap"),
-            patch.object(bot, "_handle_crafting_to_max", return_value=True),
+            patch.object(
+                bot, "sleep_navigation", side_effect=lambda: calls.append("settle")
+            ),
+            patch.object(
+                bot,
+                "_handle_crafting_to_max",
+                side_effect=lambda: calls.append("craft") or True,
+            ),
         ):
             assert bot._fulfill_selected_request() is _RequestFulfillment.CRAFTED
+
+        assert calls == ["settle", "craft"]
 
     def test_nothing_happens_returns_nothing(self):
         bot = _Stub()
@@ -589,3 +614,43 @@ class TestHandleHomesteadRequestsStopCondition:
         mock_find.assert_not_called()
         mock_tap.assert_not_called()
         mock_fulfill.assert_not_called()
+
+
+class TestShortTransitionWaits:
+    """Regression tests: transition polls must not wait the long fast_timeout.
+
+    With a high template timeout the old waits cost ~10s per back press after
+    every craft and before the first Mine scroll.
+    """
+
+    def test_back_press_waits_only_the_navigation_delay(self):
+        bot = _Stub()
+        overview = MagicMock(template=bot.HOMESTEAD_OVERVIEW_CHECK_TEMPLATE)
+
+        with (
+            patch.object(bot, "game_find_template_match", side_effect=[None, overview]),
+            patch.object(bot, "find_any_template", return_value=None),
+            patch.object(bot, "press_back_button") as mock_back,
+            patch.object(bot, "_wait_for_optional", return_value=None) as mock_wait,
+        ):
+            bot._ensure_in_homestead()
+
+        mock_back.assert_called_once()
+        templates = mock_wait.call_args.args[0]
+        assert mock_wait.call_args.kwargs["timeout"] == 2.0
+        assert set(bot._HOMESTEAD_ENTER_TEMPLATES) <= set(templates)
+
+    def test_mine_search_polls_briefly_before_scrolling(self):
+        bot = _Stub()
+        mine = MagicMock()
+
+        with (
+            patch.object(bot, "_wait_for_optional", return_value=None) as mock_wait,
+            patch.object(bot, "swipe_up") as mock_swipe,
+            patch.object(bot, "game_find_template_match", return_value=mine),
+            patch("adb_auto_player.games.afk_journey.mixins.homestead_helper.sleep"),
+        ):
+            assert bot._find_mine_building() is mine
+
+        assert mock_wait.call_args.kwargs["timeout"] == 2.0
+        mock_swipe.assert_called_once()

@@ -44,6 +44,11 @@ class HomesteadHelperMixin(AFKJourneyBase):
     _homestead_ocr_backend: RapidOCRBackend | None = None
     _homestead_stamina_ocr_backend: RapidOCRBackend | None = None
 
+    _HOMESTEAD_ENTER_TEMPLATES: ClassVar[tuple[str, ...]] = (
+        "navigation/homestead/homestead_enter.png",
+        "navigation/homestead/homestead_invaded.png",
+    )
+
     # Templates - resource collection
     HOMESTEAD_OVERVIEW_CHECK_TEMPLATE = "homestead/homestead_overview_check.png"
     HOMESTEAD_BUILDINGS_TAB_TEMPLATE = "homestead/buildings_tab.png"
@@ -318,12 +323,7 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 return
 
             # Look for the green Homestead enter button (world view, not inside).
-            enter = self.find_any_template(
-                [
-                    "navigation/homestead/homestead_enter.png",
-                    "navigation/homestead/homestead_invaded.png",
-                ]
-            )
+            enter = self.find_any_template(list(self._HOMESTEAD_ENTER_TEMPLATES))
             if enter is not None:
                 logging.info(
                     "Tapping homestead enter button (attempt %d).", attempt + 1
@@ -344,9 +344,15 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 "Sub-screen detected (attempt %d) - pressing back.", attempt + 1
             )
             self.press_back_button()
+            # Short window: returns as soon as a known screen shows up, and
+            # otherwise just lets the transition settle before the next check.
             screen = self._wait_for_optional(
-                ["cancel.png", self.HOMESTEAD_OVERVIEW_CHECK_TEMPLATE],
-                timeout=self.fast_timeout,
+                [
+                    "cancel.png",
+                    self.HOMESTEAD_OVERVIEW_CHECK_TEMPLATE,
+                    *self._HOMESTEAD_ENTER_TEMPLATES,
+                ],
+                timeout=self._settle_timeout,
             )
             if screen is not None and screen.template == "cancel.png":
                 logging.info("Exit dialog detected - dismissing with Cancel.")
@@ -457,9 +463,10 @@ class HomesteadHelperMixin(AFKJourneyBase):
             "threshold": ConfidenceValue("75%"),
             "grayscale": True,
         }
-        # The tab content loads after the tab tap; poll for it before scrolling.
+        # The tab content loads after the tab tap. The Mine is usually below
+        # the fold, so only poll briefly before starting to scroll.
         mine = self._wait_for_optional(
-            [self.HOMESTEAD_MINE_TEMPLATE], timeout=self.fast_timeout, **mine_kwargs
+            [self.HOMESTEAD_MINE_TEMPLATE], timeout=self._settle_timeout, **mine_kwargs
         )
         for _ in range(self.HOMESTEAD_MINE_SCROLL_ATTEMPTS - 1):
             if mine is not None:
@@ -470,6 +477,11 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 template=self.HOMESTEAD_MINE_TEMPLATE, **mine_kwargs
             )
         return mine
+
+    @property
+    def _settle_timeout(self) -> float:
+        """Short, user-configurable poll window for screen transitions."""
+        return self.app_settings.advanced.navigation_delay
 
     def _wait_for_optional(
         self,
@@ -899,6 +911,9 @@ class HomesteadHelperMixin(AFKJourneyBase):
         ):
             logging.info("Insufficient resources - navigating to crafting.")
             self.tap(outcome)
+            # Let the Requests view fade out first: crafting anchors can match
+            # briefly on the transition screen and then vanish again.
+            self.sleep_navigation()
             if self._handle_crafting_to_max():
                 return _RequestFulfillment.CRAFTED
             return _RequestFulfillment.BLOCKED
@@ -1136,8 +1151,10 @@ class HomesteadHelperMixin(AFKJourneyBase):
                 original request afterwards. False if the modal could only be
                 dismissed, or the linked building's craft did not complete.
         """
-        arrow = self.game_find_template_match(
-            template=self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE
+        # The modal may still be animating in when it is first detected.
+        arrow = self._wait_for_optional(
+            [self.HOMESTEAD_MISSING_RESOURCES_TEMPLATE],
+            timeout=self.HOMESTEAD_ARROW_DETECT_TIMEOUT,
         )
         if arrow is None:
             logging.warning(
