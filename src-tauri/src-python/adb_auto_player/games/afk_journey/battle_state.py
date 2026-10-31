@@ -10,12 +10,6 @@ class Mode(StrEnum):
     RAVAGED_REALM = "Ravaged Realm"
     UNION_CAMPAIGN = "Union Campaign"
 
-    def is_duras(self) -> bool:
-        return self in {Mode.DURAS_TRIALS}
-
-    def is_afk_stages(self) -> bool:
-        return self in {Mode.AFK_STAGES, Mode.SEASON_AFK_STAGES}
-
     def has_timer(self) -> bool:
         """Added in case there is ever a battle mode without a timer."""
         return self in {

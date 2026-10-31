@@ -325,13 +325,6 @@ class AdbController:
             str(coordinates.x), str(coordinates.y), display_id=self._input_display_id
         )
 
-    def click(
-        self,
-        coordinates: Coordinates,
-    ) -> None:
-        """Alias for tap."""
-        self.tap(coordinates)
-
     def press_back_button(self) -> None:
         """Presses the back button."""
         self.d.keyevent("4", display_id=self._input_display_id)  # alternative 111

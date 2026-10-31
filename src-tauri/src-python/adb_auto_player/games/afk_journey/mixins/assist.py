@@ -8,9 +8,8 @@ from adb_auto_player.exceptions import GameTimeoutError
 from adb_auto_player.games.afk_journey.base import AFKJourneyBase
 from adb_auto_player.games.afk_journey.gui_category import AFKJCategory
 from adb_auto_player.models.decorators import GUIMetadata
-from adb_auto_player.models.geometry import Box, Point
+from adb_auto_player.models.geometry import Point
 from adb_auto_player.models.image_manipulation import CropRegions
-from adb_auto_player.models.template_matching import TemplateMatchResult
 
 
 class AssistMixin(AFKJourneyBase):
@@ -42,20 +41,6 @@ class AssistMixin(AFKJourneyBase):
                 logging.info(f"Assist #{count}")
 
         logging.info("Finished: Synergy & CC")
-
-    def _find_profile_icon(self, world_chat_label: Box) -> TemplateMatchResult | None:
-        crop_left = world_chat_label.top_left.x
-        crop_top = world_chat_label.top_left.y + 990
-
-        return self.find_worst_match(
-            "assist/empty_chat.png",
-            crop_regions=CropRegions(
-                left=str(crop_left) + "px",
-                right=str(1080 - crop_left - 130) + "px",
-                top=str(crop_top) + "px",
-                bottom=str(1920 - 250 - crop_top) + "px",
-            ),
-        )
 
     def _find_synergy_or_corrupt_creature(self) -> bool:  # noqa: PLR0911 - TODO
         """Find Synergy or Corrupt Creature."""

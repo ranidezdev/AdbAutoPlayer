@@ -50,7 +50,6 @@ class HomesteadHelperMixin(AFKJourneyBase):
     HOMESTEAD_REQUESTS_TEMPLATE = "homestead/requests_label.png"
     HOMESTEAD_QUICK_SELECT_TEMPLATE = "homestead/quick_select.png"
     HOMESTEAD_DELIVER_TEMPLATE = "homestead/deliver_button.png"
-    HOMESTEAD_ORDER_COMPLETE_TEMPLATE = "homestead/order_complete.png"
     HOMESTEAD_MISSING_RESOURCES_TEMPLATE = (
         "homestead/missing_item_navigate_to_crafting.png"
     )
@@ -65,8 +64,6 @@ class HomesteadHelperMixin(AFKJourneyBase):
         "homestead/insufficient_resources_popup.png"
     )
     HOMESTEAD_INSUFFICIENT_RESOURCES_CLOSE_POINT = Point(540, 1307)
-    HOMESTEAD_MULTIPLIER_X10_TEMPLATE = "homestead/multiplier_x10.png"
-    HOMESTEAD_MULTIPLIER_STATE_TEMPLATE = "homestead/multiplier_state.png"
     HOMESTEAD_CRAFTING_SCREEN_TEMPLATE = "homestead/crafting_screen_check.png"
     # "Deck Setup" text label, only present on the crafting screen. Together
     # with the dish/card row it is a craft-type-agnostic anchor that (unlike the

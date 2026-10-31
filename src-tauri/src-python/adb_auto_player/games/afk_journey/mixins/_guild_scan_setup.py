@@ -340,11 +340,6 @@ class _GuildScanSetupMixin(BaseClass):
                 pass
         return best if best is not None else (False, (0, 0))
 
-    @staticmethod
-    def _torch_has_cuda() -> bool:
-        has_cuda, _ = _GuildScanSetupMixin._torch_metadata()
-        return has_cuda
-
     def _ensure_qwen2vl_packages(self, confirmed: bool) -> None:
         """Install or fix torch+Qwen2-VL deps, ensuring GPU (CUDA) support."""
         torch_present = importlib.util.find_spec("torch") is not None
