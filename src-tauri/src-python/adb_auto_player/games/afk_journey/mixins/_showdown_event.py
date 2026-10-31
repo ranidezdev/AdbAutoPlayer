@@ -49,7 +49,7 @@ class _ShowdownEventMixin(AFKJourneyBase, ABC):
 
     def _run_showdown_battles(self) -> None:
         while self._handle_battle():
-            self._handle_battle()
+            pass
 
     def _open_showdown_event(self) -> bool:
         """Open the event from the hamburger menu and start the first run.

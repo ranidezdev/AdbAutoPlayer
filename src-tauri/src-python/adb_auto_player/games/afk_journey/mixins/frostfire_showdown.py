@@ -389,7 +389,16 @@ class FrostfireShowdownMixin(_ShowdownEventMixin, ABC):
                 self.tap(Point(850, 1600))
                 self.tap(Point(1000, 1450))
                 logging.info("[Hero Selection] Hero selection reset")
+                # The team was cleared, so there is no team to blame on defeat.
+                self._last_selected_heroes = []
                 return
+
+        # Remember the team so a defeat can exclude it from the next attempt.
+        self._last_selected_heroes = selected_hero_templates
+        logging.info(
+            f"[Hero Selection] Successfully selected all {hero_slots} heroes: "
+            f"{', '.join(selected_hero_names)}"
+        )
 
     def _process_single_hero(
         self,
@@ -445,13 +454,6 @@ class FrostfireShowdownMixin(_ShowdownEventMixin, ABC):
             available_heroes.remove(hero_checker.template)
 
             return "selected"
-
-        # Store the selected heroes for tracking failed teams
-        self._last_selected_heroes = selected_hero_templates
-        logging.info(
-            f"[Hero Selection] Successfully selected all {hero_slots} heroes: "
-            f"{', '.join(selected_hero_names)}"
-        )
 
     def _handle_battle_result(self) -> bool:
         result = self.wait_for_any_template(

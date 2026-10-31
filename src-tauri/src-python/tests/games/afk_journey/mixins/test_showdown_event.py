@@ -20,6 +20,9 @@ class _Frostfire(FrostfireShowdownMixin):
         self._max_stamina = 3
         self._max_retries = 3
         self._difficulty_name = "Unknown"
+        self._defeat_counter = 0
+        self._failed_hero_teams = []
+        self._last_selected_heroes = []
 
 
 class TestStartNextRun:
@@ -101,3 +104,61 @@ class TestOpenShowdownEvent:
             ]
         )
         mock_start.assert_called_once()
+
+
+class TestRunShowdownBattles:
+    def test_stops_as_soon_as_a_battle_reports_no_more_runs(self):
+        """Regression test: exactly one battle per loop iteration.
+
+        Previously the loop body fought a second battle and ignored its
+        result, so a run that ended (e.g. out of tokens) still started
+        another battle.
+        """
+        bot = _Sunlit()
+
+        with patch.object(
+            bot, "_handle_battle", side_effect=[True, False, True]
+        ) as mock_battle:
+            bot._run_showdown_battles()
+
+        assert mock_battle.call_count == 2
+
+
+class TestFrostfireFailedTeamExclusion:
+    _HEROES = ("heroes/shakir_battle", "heroes/daimon_battle", "heroes/talene_battle")
+
+    def _select_full_team(self, bot):
+        found = [MagicMock(template=t, x=0, y=0) for t in self._HEROES]
+        with (
+            patch.object(bot, "find_any_template", side_effect=found),
+            patch.object(bot, "_check_hero_stamina", return_value=True),
+            patch.object(bot, "tap"),
+            patch("adb_auto_player.games.afk_journey.mixins.frostfire_showdown.sleep"),
+        ):
+            bot._handle_hero_selection()
+
+    def test_selected_team_is_remembered(self):
+        """Regression test: the selected team must be recorded.
+
+        Previously the assignment sat after a ``return`` and never ran, so a
+        defeat never excluded the losing heroes from the next attempt.
+        """
+        bot = _Frostfire()
+
+        self._select_full_team(bot)
+
+        assert bot._last_selected_heroes == list(self._HEROES)
+
+    def test_defeat_excludes_the_losing_team(self):
+        bot = _Frostfire()
+        self._select_full_team(bot)
+        defeat = MagicMock(template="event/frostfire_showdown/defeat")
+
+        with (
+            patch.object(bot, "wait_for_any_template", return_value=defeat),
+            patch.object(bot, "tap"),
+            patch("adb_auto_player.games.afk_journey.mixins.frostfire_showdown.sleep"),
+        ):
+            assert bot._handle_battle_result() is True
+
+        assert bot._failed_hero_teams == list(self._HEROES)
