@@ -57,6 +57,10 @@ general_battle_messages = [
         # "Your formation is incomplete. Turn on Auto Battle mode anyway? ..."
         text="Your formation is incomplete",
     ),
+    PopupMessage(
+        # No Artifact equipped. Continue to start the battle?
+        text="No Artifact equipped",
+    ),
 ]
 
 arena_messages = [

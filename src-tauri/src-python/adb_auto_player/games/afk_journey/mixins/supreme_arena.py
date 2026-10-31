@@ -190,6 +190,12 @@ class SupremeArenaMixin(AFKJourneyBase):
             self.sleep_navigation()
             self.tap(battle)
 
+            # A confirmation popup (e.g. "No Artifact equipped") can block the
+            # battle start. Its Confirm button would otherwise be mistaken for
+            # the battle-over Confirm below.
+            self.sleep_action()
+            self.handle_popup_messages()
+
             logging.debug("Waiting for battle to complete.")
             # Try to skip if available
             try:
