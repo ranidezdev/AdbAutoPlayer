@@ -1,7 +1,6 @@
 """AFK Journey Union Campaign Mixin."""
 
 import logging
-from time import sleep
 
 from adb_auto_player.decorators import register_command, register_custom_routine_choice
 from adb_auto_player.exceptions import (
@@ -58,35 +57,13 @@ class UnionCampaignMixin(AFKJourneyBase):
             logging.error(f"{e}")
 
     def _union_campaign_resolve_state(self) -> TemplateMatchResult:
-        while True:
-            result = self.wait_for_any_template(
-                templates=[
-                    "union_campaign/battle.png",
-                    "battle/records.png",
-                    "guide/close.png",
-                    "guide/next.png",
-                    "battle/skip.png",
-                    "battle/skip_orange.png",
-                    "quests/skip.png",
-                ],
-            )
-
-            match result.template:
-                case (
-                    "guide/close.png"
-                    | "guide/next.png"
-                    | "battle/skip.png"
-                    | "battle/skip_orange.png"
-                    | "quests/skip.png"
-                ):
-                    if "skip" in result.template:
-                        logging.info(f"Skip button found ({result.template}), tapping")
-                    self.tap(result)
-                    sleep(1)
-                    self._handle_guide_popup()
-                case _:
-                    break
-        return result
+        return self._resolve_mode_state(
+            [
+                "union_campaign/battle.png",
+                "battle/records.png",
+                *self._DISMISSABLE_STATE_TEMPLATES,
+            ]
+        )
 
     def _handle_union_campaign_screen(self) -> None:
         count = 0

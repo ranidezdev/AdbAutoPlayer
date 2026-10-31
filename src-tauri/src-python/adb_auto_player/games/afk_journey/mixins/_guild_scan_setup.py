@@ -1,6 +1,7 @@
 """Guild scan: setup, constants, OCR backend selection, debug utilities."""
 
 import importlib.util
+import json
 import logging
 import re
 import shutil
@@ -431,24 +432,51 @@ class _GuildScanSetupMixin(BaseClass):
         except Exception as e:
             logging.warning(f"Could not save debug screenshot {name}: {e}")
 
+    @staticmethod
+    def _write_data_json(filename: str, payload: object, indent: int = 4) -> Path:
+        """Write ``payload`` as JSON to ``{app_config_dir}/data/{filename}``.
+
+        Returns:
+            Path of the written file.
+        """
+        output_dir = SettingsLoader.get_app_config_dir() / "data"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / filename
+        with open(output_file, mode="w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=indent, ensure_ascii=False)
+        return output_file
+
+    @staticmethod
+    def _export_scan_results(filename: str, entries: list[dict], label: str) -> None:
+        """Export scan results to the data directory, logging the outcome.
+
+        Args:
+            filename: JSON file name inside the data directory.
+            entries: Records to export; nothing is written if empty.
+            label: Human readable name of the data used in log messages.
+        """
+        if not entries:
+            logging.warning(f"No {label} data collected.")
+            return
+        try:
+            output_file = _GuildScanSetupMixin._write_data_json(filename, entries)
+        except Exception as e:
+            logging.error(f"Failed to save {label} JSON: {e}")
+            return
+        logging.info(f"Successfully exported {len(entries)} {label} entries.")
+        logging.info(f"Output file path: {output_file}")
+
     def _save_ocr_debug(self) -> None:
         """Write raw OCR frames to ocr_debug.json for troubleshooting."""
         if self._ocr_debug is None:
             return
-        import json  # noqa: PLC0415
-        import os  # noqa: PLC0415
-
+        payload = {
+            "api_url": self.settings.guild_manager_scan.guild_members_api_url,
+            "frames": self._ocr_debug,
+        }
         try:
-            data_root = SettingsLoader.get_app_config_dir()
-            output_dir = data_root / "data"
-            os.makedirs(output_dir, exist_ok=True)
-            output_file = output_dir / "ocr_debug.json"
-            payload = {
-                "api_url": self.settings.guild_manager_scan.guild_members_api_url,
-                "frames": self._ocr_debug,
-            }
-            with open(output_file, mode="w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-            logging.info(f"OCR debug data written to {output_file}")
+            output_file = self._write_data_json("ocr_debug.json", payload, indent=2)
         except Exception as e:
             logging.warning(f"Could not write OCR debug file: {e}")
+            return
+        logging.info(f"OCR debug data written to {output_file}")

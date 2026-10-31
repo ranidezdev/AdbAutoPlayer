@@ -407,41 +407,42 @@ class QwenVLOCRBackend(OCRBackend):
             crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
         return Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
 
-    def extract_activeness_from_screenshot(
-        self, screenshot
+    def _extract_name_value_pairs(
+        self,
+        screenshot,
+        *,
+        crop_y: tuple[int, int],
+        prompt: str,
+        value_key: str,
+        missing_value: str | None,
+        kind: str,
     ) -> list[tuple[str | None, str | None]] | None:
-        """Extract (name, activeness) pairs from a guild members activeness screen.
+        """Run a name/value list prompt and parse the returned JSON array.
 
-        Supplements RapidOCR for multilingual names (Korean, etc.).
-        Returns None on failure.
+        Args:
+            screenshot: Full screenshot (BGR numpy array).
+            crop_y: Vertical (y_min, y_max) band of the list to send.
+            prompt: Instruction asking for a JSON array of objects with a
+                ``name`` key and a ``value_key`` key.
+            value_key: JSON key holding the value of each row.
+            missing_value: Value used when a row has no ``value_key``.
+            kind: Name of the data used in log messages.
+
+        Returns:
+            List of (name, value) pairs, or None on failure.
         """
         if not self._is_available or not self._init_model():
             return None
         try:
-            pil_image = self._prepare_image(screenshot, y_min=300, y_max=1850)
+            pil_image = self._prepare_image(
+                screenshot, y_min=crop_y[0], y_max=crop_y[1]
+            )
             messages = [
                 {
                     "role": "user",
                     "content": [
                         {"type": "image", "image": pil_image},
-                        {
-                            "type": "text",
-                            "text": (
-                                "This is a guild member list showing player names "
-                                "and activeness scores.\n"
-                                "Return ONLY a JSON array, nothing else:\n"
-                                '[{"name":"불꽃남자. 정대만","activeness":"450"},'
-                                '{"name":"Sacrifar","activeness":"820"},...]\n'
-                                "Rules:\n"
-                                "- name: exact text as visible — including Korean, "
-                                "Chinese, Cyrillic, special characters\n"
-                                "- activeness: the number shown on the right of "
-                                "each row ('0' if none visible)\n"
-                                "- Skip UI labels: Guild Member, Warband, More, "
-                                "Paladin, Sentinel, Founder, Officer, (Base)\n"
-                                "- Include EVERY member row visible"
-                            ),
-                        },
+                        {"type": "text", "text": prompt},
                     ],
                 }
             ]
@@ -459,16 +460,47 @@ class QwenVLOCRBackend(OCRBackend):
                 if not isinstance(entry, dict):
                     continue
                 name = str(entry["name"]).strip() if entry.get("name") else None
-                act = (
-                    str(entry["activeness"]).strip()
-                    if entry.get("activeness") is not None
-                    else "0"
+                value = (
+                    str(entry[value_key]).strip()
+                    if entry.get(value_key) is not None
+                    else missing_value
                 )
-                pairs.append((name, act))
+                pairs.append((name, value))
             return pairs if pairs else None
         except Exception as e:
-            logger.warning(f"Qwen2-VL activeness extraction failed: {e}")
+            logger.warning(f"Qwen2-VL {kind} extraction failed: {e}")
             return None
+
+    def extract_activeness_from_screenshot(
+        self, screenshot
+    ) -> list[tuple[str | None, str | None]] | None:
+        """Extract (name, activeness) pairs from a guild members activeness screen.
+
+        Supplements RapidOCR for multilingual names (Korean, etc.).
+        Returns None on failure.
+        """
+        return self._extract_name_value_pairs(
+            screenshot,
+            crop_y=(300, 1850),
+            prompt=(
+                "This is a guild member list showing player names "
+                "and activeness scores.\n"
+                "Return ONLY a JSON array, nothing else:\n"
+                '[{"name":"????. ???","activeness":"450"},'
+                '{"name":"Sacrifar","activeness":"820"},...]\n'
+                "Rules:\n"
+                "- name: exact text as visible ? including Korean, "
+                "Chinese, Cyrillic, special characters\n"
+                "- activeness: the number shown on the right of "
+                "each row ('0' if none visible)\n"
+                "- Skip UI labels: Guild Member, Warband, More, "
+                "Paladin, Sentinel, Founder, Officer, (Base)\n"
+                "- Include EVERY member row visible"
+            ),
+            value_key="activeness",
+            missing_value="0",
+            kind="activeness",
+        )
 
     def extract_chest_from_screenshot(
         self, screenshot
@@ -478,59 +510,27 @@ class QwenVLOCRBackend(OCRBackend):
         Supplements RapidOCR for multilingual names (Korean, etc.).
         Returns None on failure.
         """
-        if not self._is_available or not self._init_model():
-            return None
-        try:
-            pil_image = self._prepare_image(screenshot, y_min=850, y_max=1850)
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": pil_image},
-                        {
-                            "type": "text",
-                            "text": (
-                                "This is a guild chest contribution ranking screen. "
-                                "Each row shows a member name and their chest count.\n"
-                                "Return ONLY a JSON array, nothing else:\n"
-                                '[{"name":"불꽃남자. 정대만","chest":"67"},'
-                                '{"name":"Sacrifar","chest":"22"},...]\n'
-                                "Rules:\n"
-                                "- name: exact player name — including Korean, "
-                                "Chinese, Cyrillic, special characters\n"
-                                "- chest: the contribution number on the right\n"
-                                "- Skip labels: Chest Contribution Ranking, "
-                                "Paladin, Sentinel, Officer, Founder, rank numbers\n"
-                                "- Include EVERY member row visible"
-                            ),
-                        },
-                    ],
-                }
-            ]
-            raw = self._run_qwen_inference(messages, max_new_tokens=384)
-            if not raw:
-                return None
-            match = re.search(r"\[.*\]", raw, re.DOTALL)
-            if not match:
-                return None
-            data = json.loads(match.group())
-            if not isinstance(data, list):
-                return None
-            pairs: list[tuple[str | None, str | None]] = []
-            for entry in data:
-                if not isinstance(entry, dict):
-                    continue
-                name = str(entry["name"]).strip() if entry.get("name") else None
-                chest = (
-                    str(entry["chest"]).strip()
-                    if entry.get("chest") is not None
-                    else None
-                )
-                pairs.append((name, chest))
-            return pairs if pairs else None
-        except Exception as e:
-            logger.warning(f"Qwen2-VL chest extraction failed: {e}")
-            return None
+        return self._extract_name_value_pairs(
+            screenshot,
+            crop_y=(850, 1850),
+            prompt=(
+                "This is a guild chest contribution ranking screen. "
+                "Each row shows a member name and their chest count.\n"
+                "Return ONLY a JSON array, nothing else:\n"
+                '[{"name":"????. ???","chest":"67"},'
+                '{"name":"Sacrifar","chest":"22"},...]\n'
+                "Rules:\n"
+                "- name: exact player name ? including Korean, "
+                "Chinese, Cyrillic, special characters\n"
+                "- chest: the contribution number on the right\n"
+                "- Skip labels: Chest Contribution Ranking, "
+                "Paladin, Sentinel, Officer, Founder, rank numbers\n"
+                "- Include EVERY member row visible"
+            ),
+            value_key="chest",
+            missing_value=None,
+            kind="chest",
+        )
 
     def extract_rankings_from_screenshot(
         self, screenshot

@@ -1,15 +1,12 @@
 """Guild scan: Dream Realm and Supreme Arena rankings scanning."""
 
 import datetime
-import json
 import logging
-import os
 import re
 from time import sleep
 
 import cv2
 from adb_auto_player.exceptions import AutoPlayerWarningError, GameTimeoutError
-from adb_auto_player.file_loader import SettingsLoader
 from adb_auto_player.models import ConfidenceValue
 from adb_auto_player.models.geometry import Point
 from adb_auto_player.models.ocr import OCRResult
@@ -223,23 +220,7 @@ class _GuildScanRankingsMixin(_GuildScanIdentityMixin):
         return self._canonicalize_observations(observations, date_name)
 
     def _save_rankings_to_json(self, rankings: list[dict]) -> None:
-        if not rankings:
-            logging.warning("No rankings data collected.")
-            return
-
-        try:
-            data_root = SettingsLoader.get_app_config_dir()
-            output_dir = data_root / "data"
-            os.makedirs(output_dir, exist_ok=True)
-            output_file = output_dir / "dream_realm_rankings.json"
-
-            with open(output_file, mode="w", encoding="utf-8") as f:
-                json.dump(rankings, f, indent=4, ensure_ascii=False)
-
-            logging.info(f"Successfully exported {len(rankings)} ranking entries.")
-            logging.info(f"Output file path: {output_file}")
-        except Exception as e:
-            logging.error(f"Failed to save rankings JSON: {e}")
+        self._export_scan_results("dream_realm_rankings.json", rankings, "ranking")
 
     def _date_to_english_weekday(self, date_str: str) -> str:
         """Convert MM/DD date string to English weekday name."""
@@ -1277,7 +1258,7 @@ class _GuildScanRankingsMixin(_GuildScanIdentityMixin):
 
         return rank, name, score
 
-    def _scan_supreme_arena(  # noqa: PLR0915
+    def _scan_supreme_arena(
         self,
         ocr_backend: OCRBackend,
         fallback: OCRBackend | None = None,
@@ -1366,25 +1347,9 @@ class _GuildScanRankingsMixin(_GuildScanIdentityMixin):
             sa_rankings, guild_members or []
         )
 
-        if sa_rankings:
-            try:
-                data_root = SettingsLoader.get_app_config_dir()
-                output_dir = data_root / "data"
-                os.makedirs(output_dir, exist_ok=True)
-                output_file = output_dir / "supreme_arena_rankings.json"
-
-                with open(output_file, mode="w", encoding="utf-8") as f:
-                    json.dump(sa_rankings, f, indent=4, ensure_ascii=False)
-
-                logging.info(
-                    f"Successfully exported {len(sa_rankings)} "
-                    "Supreme Arena ranking entries."
-                )
-                logging.info(f"Output file path: {output_file}")
-            except Exception as e:
-                logging.error(f"Failed to save Supreme Arena rankings JSON: {e}")
-        else:
-            logging.warning("No Supreme Arena rankings data collected.")
+        self._export_scan_results(
+            "supreme_arena_rankings.json", sa_rankings, "Supreme Arena ranking"
+        )
 
     def _normalize_phase_tab_text(self, text: str) -> str | None:
         """Return a canonical 'Phase N' label, or None if `text` isn't a phase tab.
@@ -1515,22 +1480,6 @@ class _GuildScanRankingsMixin(_GuildScanIdentityMixin):
         self._save_afk_stages_rankings_to_json(rankings)
 
     def _save_afk_stages_rankings_to_json(self, rankings: list[dict]) -> None:
-        if not rankings:
-            logging.warning("No AFK Stage rankings data collected.")
-            return
-
-        try:
-            data_root = SettingsLoader.get_app_config_dir()
-            output_dir = data_root / "data"
-            os.makedirs(output_dir, exist_ok=True)
-            output_file = output_dir / "afk_stages_rankings.json"
-
-            with open(output_file, mode="w", encoding="utf-8") as f:
-                json.dump(rankings, f, indent=4, ensure_ascii=False)
-
-            logging.info(
-                f"Successfully exported {len(rankings)} AFK Stage ranking entries."
-            )
-            logging.info(f"Output file path: {output_file}")
-        except Exception as e:
-            logging.error(f"Failed to save AFK Stage rankings JSON: {e}")
+        self._export_scan_results(
+            "afk_stages_rankings.json", rankings, "AFK Stage ranking"
+        )

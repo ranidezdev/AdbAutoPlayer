@@ -1,12 +1,10 @@
 """Guild scan: activeness and chest contribution scanning."""
 
 import logging
-import os
 import re
 from difflib import SequenceMatcher
 from time import sleep
 
-from adb_auto_player.file_loader import SettingsLoader
 from adb_auto_player.models.geometry import Point
 from adb_auto_player.ocr import OCRBackend, RapidOCRBackend
 from adb_auto_player.ocr.qwen2vl_backend import QwenVLOCRBackend
@@ -885,21 +883,4 @@ class _GuildScanActivenessMixin(_GuildScanRankingsMixin):
 
     def _save_guild_activeness_to_json(self, records: list[dict]) -> None:
         """Save guild activeness records to guild_activeness.json."""
-        if not records:
-            logging.warning("No guild activeness data collected.")
-            return
-        try:
-            data_root = SettingsLoader.get_app_config_dir()
-            output_dir = data_root / "data"
-            os.makedirs(output_dir, exist_ok=True)
-            output_file = output_dir / "guild_activeness.json"
-            with open(output_file, mode="w", encoding="utf-8") as f:
-                import json  # noqa: PLC0415
-
-                json.dump(records, f, indent=4, ensure_ascii=False)
-            logging.info(
-                f"Successfully exported {len(records)} guild activeness entries."
-            )
-            logging.info(f"Output file path: {output_file}")
-        except Exception as e:
-            logging.error(f"Failed to save guild activeness JSON: {e}")
+        self._export_scan_results("guild_activeness.json", records, "guild activeness")

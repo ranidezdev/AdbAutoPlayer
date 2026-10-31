@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import timedelta
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, ClassVar
 
 from adb_auto_player.decorators import register_cache, register_game
 from adb_auto_player.exceptions import (
@@ -50,6 +50,16 @@ class AFKJourneyBase(
     Game,
 ):
     """AFK Journey Base Class."""
+
+    # Guide popups and skip buttons that can cover a battle mode's screen and
+    # are simply tapped away while waiting for the actual screen state.
+    _DISMISSABLE_STATE_TEMPLATES: ClassVar[tuple[str, ...]] = (
+        "guide/close.png",
+        "guide/next.png",
+        "battle/skip.png",
+        "battle/skip_orange.png",
+        "quests/skip.png",
+    )
 
     def __init__(self) -> None:
         """Initialize AFKJourneyBase."""
@@ -830,6 +840,30 @@ class AFKJourneyBase(
                 break
             self.tap(result)
             self.sleep_action()
+
+    def _resolve_mode_state(self, templates: list[str]) -> TemplateMatchResult:
+        """Wait for a battle-mode screen state, dismissing guides and skips.
+
+        Guide popups and skip buttons found on the way are tapped away until
+        any other template from ``templates`` is matched.
+
+        Args:
+            templates: Templates to wait for, in priority order. Should include
+                the dismissable ``_DISMISSABLE_STATE_TEMPLATES`` so they can be
+                cleared.
+
+        Returns:
+            The first match that is not a guide popup or skip button.
+        """
+        while True:
+            result = self.wait_for_any_template(templates=templates)
+            if result.template not in self._DISMISSABLE_STATE_TEMPLATES:
+                return result
+            if "skip" in result.template:
+                logging.info(f"Skip button found ({result.template}), tapping")
+            self.tap(result)
+            sleep(1)
+            self._handle_guide_popup()
 
     def _is_manual_formation(self) -> bool:
         """Check if current formation is manual.

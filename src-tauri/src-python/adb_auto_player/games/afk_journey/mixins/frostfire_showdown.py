@@ -5,8 +5,10 @@ from abc import ABC
 from time import sleep
 
 from adb_auto_player.decorators import register_command, register_custom_routine_choice
-from adb_auto_player.games.afk_journey.base import AFKJourneyBase
 from adb_auto_player.games.afk_journey.gui_category import AFKJCategory
+from adb_auto_player.games.afk_journey.mixins._showdown_event import (
+    _ShowdownEventMixin,
+)
 from adb_auto_player.models import ConfidenceValue
 from adb_auto_player.models.decorators import GUIMetadata
 from adb_auto_player.models.geometry import Point
@@ -14,8 +16,11 @@ from adb_auto_player.models.image_manipulation import CropRegions
 from adb_auto_player.models.template_matching import TemplateMatchResult
 
 
-class FrostfireShowdownMixin(AFKJourneyBase, ABC):
+class FrostfireShowdownMixin(_ShowdownEventMixin, ABC):
     """Frostfire Showdown Mixin."""
+
+    _EVENT_DIR = "event/frostfire_showdown"
+    _EVENT_NAME = "Frostfire Showdown"
 
     def __init__(self) -> None:
         """Initialize Frostfire Showdown Mixin."""
@@ -115,75 +120,24 @@ class FrostfireShowdownMixin(AFKJourneyBase, ABC):
         if self._open_frostfire_showdown() is False:
             return
 
-        while self._handle_battle():
-            self._handle_battle()
+        self._run_showdown_battles()
 
         logging.info("Frostfire Showdown Finished!")
 
     def _open_frostfire_showdown(self) -> bool:
-        logging.info(
-            "Opening Frostfire Showdown",
-        )
-        self._navigate_menu_chain(
-            [
-                "navigation/hamburger_menu",
-                "dailies/hamburger/events",
-                "event/frostfire_showdown/frostfire_showdown",
-            ]
-        )
-        self.wait_for_template(template="event/frostfire_showdown/title_s")
-        self.tap(Point(650, 1450))  # Join
-        sleep(3)
+        return self._open_showdown_event()
 
-        # Detect difficulty level
+    def _on_run_screen(self) -> None:
+        """Detect the active difficulty before a new run (token) is started."""
         difficulty_name, max_stamina, max_retries = self._detect_difficulty()
         self._difficulty_name = difficulty_name
         self._max_stamina = max_stamina
         self._max_retries = max_retries
-
-        self.wait_for_template(template="event/frostfire_showdown/title_s")
-        self.tap(Point(800, 1800))  # Start/Continue
-        sleep(4)
-        if self.game_find_template_match(
-            template="event/frostfire_showdown/insufficient_resources"
-        ):
-            logging.warning("Out of Frostfire Showdown tokens!")
-            return False
-        return True
-
-    def _handle_battle(self) -> bool:
-        # Enter hero selection screen
-        self.wait_for_template(template="event/frostfire_showdown/quick_select")
-        self.tap(Point(800, 1800))  # Continue/Battle
-        sleep(2)
-        self._tap_till_template_disappears(template="navigation/confirm")  # consumables
-        sleep(4)
-
-        # Clear all hero spots
-        self.wait_for_template(template="start_battle")
-        logging.debug("Clearing heroes")
-        self.tap(Point(425, 950))
-        sleep(1)
-        self.tap(Point(325, 870))
-        sleep(1)
-        self.tap(Point(175, 870))
         sleep(1)
 
-        # Select 3 new ones from list of heroes (excluding previously failed heroes)
+    def _select_heroes(self) -> None:
+        # Exclude heroes of teams that already failed with this token
         self._handle_hero_selection(exclude_heroes=self._failed_hero_teams)
-
-        # Start Battle
-        self._tap_till_template_disappears(template="start_battle")  # Battle
-        logging.info("Battling..")
-        sleep(3)
-        self._tap_till_template_disappears(template="navigation/confirm")  # Confirm
-        sleep(15)
-
-        # Handle end result
-        if self._handle_battle_result():
-            return True
-        else:
-            return False
 
     def _check_hero_stamina(self, hero_position: TemplateMatchResult) -> bool | None:
         """Check stamina indicator below detected hero.
@@ -370,22 +324,6 @@ class FrostfireShowdownMixin(AFKJourneyBase, ABC):
             "heroes/valka_battle",
         ]
 
-        # # Reverse list for testing
-        # heroes = [
-        #     "heroes/silvina_battle",
-        #     "heroes/valka_battle",
-        #     "heroes/berial_battle",
-        #     "heroes/sinbad_battle",
-        #     "heroes/natsu_battle",
-        #     "heroes/faramor_battle",
-        #     "heroes/vala_battle",
-        #     "heroes/sonja_battle",
-        #     "heroes/lenya_battle",
-        #     "heroes/shemira_battle",
-        #     "heroes/harak_battle",
-        #     "heroes/shakir_battle",
-        # ]
-
         # Create a working copy of the heroes list that we can modify
         # Filter out excluded heroes (those that failed previously)
         available_heroes = [h for h in heroes if h not in exclude_heroes]
@@ -531,31 +469,15 @@ class FrostfireShowdownMixin(AFKJourneyBase, ABC):
                 logging.info("Victory!")
                 # Reset failed heroes on victory so next battle can use whole hero pool
                 self._failed_hero_teams = []
-                self.tap(Point(550, 1800))  # Tap to Close
+                self.tap(self._TAP_TO_CLOSE_POINT)  # Tap to Close
                 sleep(5)
                 # If we won the final clear Battle Record and use next token
                 if self.game_find_template_match(
                     template="event/frostfire_showdown/battle_record"
                 ):
-                    self.tap(Point(550, 1800))  # Tap Battle Record
+                    self.tap(self._TAP_TO_CLOSE_POINT)  # Tap Battle Record
                     sleep(5)
-                    self.wait_for_template(template="event/frostfire_showdown/title_s")
-
-                    # Detect difficulty level
-                    difficulty_name, max_stamina, max_retries = (
-                        self._detect_difficulty()
-                    )
-                    self._difficulty_name = difficulty_name
-                    self._max_stamina = max_stamina
-                    self._max_retries = max_retries
-                    sleep(1)
-
-                    self.tap(Point(800, 1800))  # Start/Continue
-                    if self.game_find_template_match(
-                        template="event/frostfire_showdown/insufficient_resources"
-                    ):
-                        logging.warning("Out of Frostfire Showdown tokens!")
-                        return False
+                    return self._start_next_run()
                 return True
 
             case "event/frostfire_showdown/defeat":
@@ -576,7 +498,7 @@ class FrostfireShowdownMixin(AFKJourneyBase, ABC):
                         f"{', '.join(failed_names)}"
                     )
 
-                self.tap(Point(550, 1800))  # Tap to Close
+                self.tap(self._TAP_TO_CLOSE_POINT)  # Tap to Close
                 sleep(5)
 
                 # Retry with same token based on difficulty's max retries
@@ -590,24 +512,10 @@ class FrostfireShowdownMixin(AFKJourneyBase, ABC):
                 logging.info("Max retries reached, using a new token...")
                 self.tap(Point(100, 1800))  # Tap back button on defeat screen
                 sleep(3)
-                self.tap(Point(550, 1800))  # Tap Battle Record
+                self.tap(self._TAP_TO_CLOSE_POINT)  # Tap Battle Record
                 sleep(5)
                 # Use another token
-                self.wait_for_template(template="event/frostfire_showdown/title_s")
-                # Detect difficulty level
-                difficulty_name, max_stamina, max_retries = self._detect_difficulty()
-                self._difficulty_name = difficulty_name
-                self._max_stamina = max_stamina
-                self._max_retries = max_retries
-                sleep(1)
-                self.tap(Point(800, 1800))  # Start/Continue
-                sleep(4)
-                if self.game_find_template_match(
-                    template="event/frostfire_showdown/insufficient_resources"
-                ):
-                    logging.warning("Out of Frostfire Showdown tokens!")
-                    return False
-                return True
+                return self._start_next_run(settle_seconds=4)
 
         logging.warning("Something went wrong detecting battle results!")
         self.capture_debug_screenshot("frostfire_showdown_battle_result_unknown")

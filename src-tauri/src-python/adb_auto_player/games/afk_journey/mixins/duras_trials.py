@@ -48,37 +48,15 @@ class DurasTrialsMixin(AFKJourneyBase):
             logging.error(f"{e}")
 
     def _dura_resolve_state(self) -> TemplateMatchResult:
-        while True:
-            result = self.wait_for_any_template(
-                templates=[
-                    "battle/records.png",
-                    "duras_trials/battle.png",
-                    "duras_trials/sweep.png",
-                    "guide/close.png",
-                    "guide/next.png",
-                    "battle/skip.png",
-                    "battle/skip_orange.png",
-                    "quests/skip.png",
-                    "duras_trials/continue_gray.png",
-                ],
-            )
-
-            match result.template:
-                case (
-                    "guide/close.png"
-                    | "guide/next.png"
-                    | "battle/skip.png"
-                    | "battle/skip_orange.png"
-                    | "quests/skip.png"
-                ):
-                    if "skip" in result.template:
-                        logging.info(f"Skip button found ({result.template}), tapping")
-                    self.tap(result)
-                    sleep(1)
-                    self._handle_guide_popup()
-                case _:
-                    break
-        return result
+        return self._resolve_mode_state(
+            [
+                "battle/records.png",
+                "duras_trials/battle.png",
+                "duras_trials/sweep.png",
+                *self._DISMISSABLE_STATE_TEMPLATES,
+                "duras_trials/continue_gray.png",
+            ]
+        )
 
     def _handle_dura_screen(self) -> None:
         count = 0

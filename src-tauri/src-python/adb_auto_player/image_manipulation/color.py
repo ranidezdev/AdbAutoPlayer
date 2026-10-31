@@ -80,6 +80,13 @@ class Color:
             raise ValueError("Unsupported color format")
 
     @staticmethod
+    def _require_three_channels(image: np.ndarray) -> None:
+        if image.ndim != _NUM_COLORS_IN_RGB or image.shape[2] != _NUM_COLORS_IN_RGB:
+            raise ValueError(
+                f"Input image must have 3 color channels, got shape {image.shape}"
+            )
+
+    @staticmethod
     def to_rgb(image: np.ndarray) -> np.ndarray:
         """Convert a BGR image to RGB format.
 
@@ -92,10 +99,7 @@ class Color:
         Raises:
             ValueError: If the input image does not have 3 color channels.
         """
-        if image.ndim != _NUM_COLORS_IN_RGB or image.shape[2] != _NUM_COLORS_IN_RGB:
-            raise ValueError(
-                f"Input image must have 3 color channels, got shape {image.shape}"
-            )
+        Color._require_three_channels(image)
         return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     @staticmethod
@@ -111,8 +115,5 @@ class Color:
         Raises:
             ValueError: If the input image does not have 3 color channels.
         """
-        if image.ndim != _NUM_COLORS_IN_RGB or image.shape[2] != _NUM_COLORS_IN_RGB:
-            raise ValueError(
-                f"Input image must have 3 color channels, got shape {image.shape}"
-            )
+        Color._require_three_channels(image)
         return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)

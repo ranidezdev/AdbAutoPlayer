@@ -54,7 +54,6 @@ class TestHandleUnionCampaignScreen:
             ),
             patch.object(bot, "_tap_till_template_disappears") as mock_tap_till,
             patch.object(bot, "_handle_battle_screen", return_value=False),
-            patch("adb_auto_player.games.afk_journey.mixins.union_campaign.sleep"),
         ):
             bot._handle_union_campaign_screen()
 
@@ -70,7 +69,6 @@ class TestHandleUnionCampaignScreen:
             ),
             patch.object(bot, "_tap_till_template_disappears") as mock_tap_till,
             patch.object(bot, "_handle_battle_screen", return_value=False),
-            patch("adb_auto_player.games.afk_journey.mixins.union_campaign.sleep"),
         ):
             bot._handle_union_campaign_screen()
 
@@ -89,7 +87,6 @@ class TestHandleUnionCampaignScreen:
                 bot, "_handle_battle_screen", return_value=False
             ) as mock_battle,
             patch.object(bot, "wait_for_any_template") as mock_wait,
-            patch("adb_auto_player.games.afk_journey.mixins.union_campaign.sleep"),
         ):
             bot._handle_union_campaign_screen()
 
@@ -118,7 +115,6 @@ class TestHandleUnionCampaignScreen:
             patch.object(bot, "tap") as mocks["tap"],
             patch.object(bot, "sleep_navigation"),
             patch.object(bot, "capture_debug_screenshot") as mocks["debug"],
-            patch("adb_auto_player.games.afk_journey.mixins.union_campaign.sleep"),
         ):
             bot._handle_union_campaign_screen()
         return mocks
@@ -221,7 +217,6 @@ class TestHandleUnionCampaignScreen:
             patch.object(
                 bot, "_handle_battle_screen", return_value=False
             ) as mock_battle,
-            patch("adb_auto_player.games.afk_journey.mixins.union_campaign.sleep"),
         ):
             bot._handle_union_campaign_screen()
 
@@ -357,3 +352,39 @@ class TestSweepIsNeverAutomated:
         source = Path(union_campaign_module.__file__).read_text(encoding="utf-8")
 
         assert re.search(r"sweep.{0,30}\.png|\.png.{0,30}sweep", source, re.I) is None
+
+
+class TestResolveModeState:
+    def test_dismisses_skip_and_guide_until_a_real_state_appears(self):
+        bot = _Stub()
+        skip = MagicMock(template="battle/skip.png")
+        guide = MagicMock(template="guide/close.png")
+        battle = MagicMock(template="union_campaign/battle.png")
+
+        with (
+            patch.object(
+                bot, "wait_for_any_template", side_effect=[skip, guide, battle]
+            ) as mock_wait,
+            patch.object(bot, "tap") as mock_tap,
+            patch.object(bot, "_handle_guide_popup") as mock_guide,
+            patch("adb_auto_player.games.afk_journey.base.sleep"),
+        ):
+            assert bot._union_campaign_resolve_state() is battle
+
+        assert [c.args[0] for c in mock_tap.call_args_list] == [skip, guide]
+        assert mock_guide.call_count == 2
+        templates = mock_wait.call_args.kwargs["templates"]
+        assert templates[:2] == ["union_campaign/battle.png", "battle/records.png"]
+        assert set(bot._DISMISSABLE_STATE_TEMPLATES) <= set(templates)
+
+    def test_returns_immediately_without_tapping(self):
+        bot = _Stub()
+        records = MagicMock(template="battle/records.png")
+
+        with (
+            patch.object(bot, "wait_for_any_template", return_value=records),
+            patch.object(bot, "tap") as mock_tap,
+        ):
+            assert bot._union_campaign_resolve_state() is records
+
+        mock_tap.assert_not_called()
