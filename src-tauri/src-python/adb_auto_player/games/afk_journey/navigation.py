@@ -429,27 +429,7 @@ class Navigation(PopupMessageHandler, ABC):
             return
 
         self.navigate_to_battle_modes_screen()
-
-        # The Guild Mode tab pill only needs tapping if its content (the Union
-        # Campaign card) isn't already showing - e.g. Guild Mode was already
-        # the active tab from a previous visit. Its pill also renders
-        # differently active vs. inactive, so this also sidesteps needing a
-        # second template for the active-tab appearance.
-        if (
-            self.game_find_template_match(template="battle_modes/union_campaign.png")
-            is None
-        ):
-            try:
-                guild_mode_tab = self.wait_for_template(
-                    "battle_modes/guild_mode_tab.png",
-                    crop_regions=CropRegions(top=0.75, bottom=0.05),
-                    timeout=self.template_timeout,
-                )
-            except GameTimeoutError as e:
-                self.capture_debug_screenshot("guild_mode_tab_not_found")
-                raise GameTimeoutError("Could not find Guild Mode tab.") from e
-            self.tap(guild_mode_tab)
-            self.sleep_navigation()
+        self._open_guild_mode_tab(card_template="battle_modes/union_campaign.png")
 
         result = self._find_in_battle_modes(
             template="battle_modes/union_campaign.png",
@@ -469,6 +449,109 @@ class Navigation(PopupMessageHandler, ABC):
             self.capture_debug_screenshot("union_campaign_screen_not_found")
             raise e
         self.sleep_action()
+
+    # "Tap to close" result popups (Victory summary of finished bounties and
+    # Rewards Obtained) shown on top of the Bounty Contract screen on entry and
+    # after every search.
+    BOUNTY_CONTRACT_TAP_TO_CLOSE_TEMPLATES: tuple[str, ...] = (
+        "tap_to_close.png",
+        "quests/tap_to_close_dark.png",
+        "quests/tap_to_close.png",
+    )
+    BOUNTY_CONTRACT_SEARCH_TARGETS_TEMPLATE = "bounty_contract/search_targets.png"
+    # The Search Targets button turns grey once the counter reaches 0/15.
+    BOUNTY_CONTRACT_DEPLETED_TEMPLATE = "bounty_contract/search_targets_depleted.png"
+    BOUNTY_CONTRACT_BOTTOM_CROP = CropRegions(top=0.85)
+
+    def navigate_to_bounty_contract_screen(self) -> None:
+        """Navigate to the Bounty Contract screen (Battle Modes > Guild Mode).
+
+        The Bounty Contract card opens the Guild hall with the camera on the
+        Bounty Contract board, which then has to be tapped to open the mode.
+        Result popups shown on entry are left for the caller to dismiss.
+
+        Raises:
+            GameTimeoutError: A navigation step could not be found.
+        """
+        logging.info("Navigating to Bounty Contract screen")
+        button_templates = [
+            self.BOUNTY_CONTRACT_SEARCH_TARGETS_TEMPLATE,
+            self.BOUNTY_CONTRACT_DEPLETED_TEMPLATE,
+        ]
+        screen_templates = [
+            *self.BOUNTY_CONTRACT_TAP_TO_CLOSE_TEMPLATES,
+            *button_templates,
+        ]
+
+        if self.find_any_template(
+            button_templates, crop_regions=self.BOUNTY_CONTRACT_BOTTOM_CROP
+        ):
+            return
+
+        self.navigate_to_battle_modes_screen()
+        self._open_guild_mode_tab(card_template="battle_modes/bounty_contract.png")
+
+        result = self._find_in_battle_modes(
+            template="battle_modes/bounty_contract.png",
+            timeout_message="Could not find Bounty Contract Label",
+        )
+        self._tap_till_template_disappears(result.template)
+        self.sleep_navigation()
+
+        # The board label has a see-through background that shifts with the
+        # hall camera, so it needs a looser threshold than solid UI elements.
+        board_threshold = ConfidenceValue("80%")
+        try:
+            board = self.wait_for_template(
+                template="bounty_contract/hall_label.png",
+                threshold=board_threshold,
+                timeout=self.template_timeout,
+                diagnostic_recheck=True,
+            )
+        except GameTimeoutError as e:
+            self.capture_debug_screenshot("bounty_contract_board_not_found")
+            raise e
+        self._tap_till_template_disappears(board.template, threshold=board_threshold)
+        self.sleep_navigation()
+
+        try:
+            self.wait_for_any_template(
+                templates=screen_templates,
+                crop_regions=self.BOUNTY_CONTRACT_BOTTOM_CROP,
+                timeout=self.template_timeout,
+                diagnostic_recheck=True,
+            )
+        except GameTimeoutError as e:
+            self.capture_debug_screenshot("bounty_contract_screen_not_found")
+            raise e
+
+    def _open_guild_mode_tab(self, card_template: str) -> None:
+        """Switch the Battle Modes screen to its Guild Mode tab.
+
+        The tab pill only needs tapping if a Guild Mode card isn't already
+        showing - e.g. Guild Mode was already the active tab from a previous
+        visit. Its pill also renders differently active vs. inactive, so this
+        also sidesteps needing a second template for the active-tab appearance.
+
+        Args:
+            card_template: Template of a card only shown on the Guild Mode tab.
+
+        Raises:
+            GameTimeoutError: The Guild Mode tab could not be found.
+        """
+        if self.game_find_template_match(template=card_template) is not None:
+            return
+        try:
+            guild_mode_tab = self.wait_for_template(
+                "battle_modes/guild_mode_tab.png",
+                crop_regions=CropRegions(top=0.75, bottom=0.05),
+                timeout=self.template_timeout,
+            )
+        except GameTimeoutError as e:
+            self.capture_debug_screenshot("guild_mode_tab_not_found")
+            raise GameTimeoutError("Could not find Guild Mode tab.") from e
+        self.tap(guild_mode_tab)
+        self.sleep_navigation()
 
     @staticmethod
     def _is_in_coming_soon_section(
